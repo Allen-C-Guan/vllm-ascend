@@ -115,7 +115,7 @@ bool CheckWeightQuantModeValidity(int64_t weightQuantMode)
             supportedStr.pop_back();
             supportedStr.pop_back();
         }
-        OP_LOGE_FOR_INVALID_VALUE("MlaPrologV3", "weightQuantMode", std::to_string(weightQuantMode), supportedStr);
+        OP_LOGE_FOR_INVALID_VALUE("MlaPrologV3", "weightQuantMode",(std::to_string(weightQuantMode)).c_str(), supportedStr);
         return false;
     }
     return true;
@@ -149,9 +149,8 @@ bool CheckKvCacheQuantModeValidity(int64_t weightQuantMode, int64_t kvCacheQuant
             supportedStr.pop_back();
             supportedStr.pop_back();
         }
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON("MlaPrologV3", "kvCacheQuantMode", std::to_string(kvCacheQuantMode),
-                                              "When weightQuantMode==" + std::to_string(weightQuantMode) +
-                                                  ", must be within " + supportedStr);
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON("MlaPrologV3", "kvCacheQuantMode",(std::to_string(kvCacheQuantMode)).c_str(),("When weightQuantMode==" + std::to_string(weightQuantMode) +
+                                                  ").c_str(), must be within " + supportedStr);
         return false;
     }
     return true;
@@ -161,7 +160,7 @@ bool CheckQueryQuantModeValidity(int64_t queryQuantMode)
 {
     std::set<int64_t> supportedQueryQuantMode = {0LL, 1LL};
     if (supportedQueryQuantMode.find(queryQuantMode) == supportedQueryQuantMode.end()) {
-        OP_LOGE_FOR_INVALID_VALUE("MlaPrologV3", "queryQuantMode", std::to_string(queryQuantMode), "0, 1");
+        OP_LOGE_FOR_INVALID_VALUE("MlaPrologV3", "queryQuantMode",(std::to_string(queryQuantMode)).c_str(), "0, 1");
         return false;
     }
     return true;

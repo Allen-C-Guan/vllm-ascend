@@ -82,56 +82,89 @@ std::string QSFAErrorToString(const T &value)
         OP_LOGE(opname, "Invalid input: %s.", qsfaParam.c_str());                              \
     } while (0)
 
+#ifdef OP_LOGE_FOR_INVALID_DTYPE_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_DTYPE_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_DTYPE_WITH_REASON
 #define OP_LOGE_FOR_INVALID_DTYPE_WITH_REASON(opname, param, actual, reason)                   \
     QSFA_LOG_INVALID_WITH_REASON(opname, "dtype", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_DTYPES_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_DTYPES_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_DTYPES_WITH_REASON
 #define OP_LOGE_FOR_INVALID_DTYPES_WITH_REASON(opname, param, actual, reason)                  \
     QSFA_LOG_INVALID_WITH_REASON(opname, "dtype", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_SHAPE
+#undef OP_LOGE_FOR_INVALID_SHAPE
+#endif
 #ifndef OP_LOGE_FOR_INVALID_SHAPE
 #define OP_LOGE_FOR_INVALID_SHAPE(opname, param, actual, expected)                             \
     QSFA_LOG_INVALID_WITH_EXPECTED(opname, "shape", param, actual, expected)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_SHAPE_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_SHAPE_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_SHAPE_WITH_REASON
 #define OP_LOGE_FOR_INVALID_SHAPE_WITH_REASON(opname, param, actual, reason)                   \
     QSFA_LOG_INVALID_WITH_REASON(opname, "shape", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_SHAPEDIM_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_SHAPEDIM_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_SHAPEDIM_WITH_REASON
 #define OP_LOGE_FOR_INVALID_SHAPEDIM_WITH_REASON(opname, param, actual, reason)                \
     QSFA_LOG_INVALID_WITH_REASON(opname, "shape dim", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON
 #define OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON(opname, param, actual, reason)               \
     QSFA_LOG_INVALID_WITH_REASON(opname, "shape size", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_VALUE
+#undef OP_LOGE_FOR_INVALID_VALUE
+#endif
 #ifndef OP_LOGE_FOR_INVALID_VALUE
 #define OP_LOGE_FOR_INVALID_VALUE(opname, param, actual, expected)                             \
     QSFA_LOG_INVALID_WITH_EXPECTED(opname, "value", param, actual, expected)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_VALUE_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_VALUE_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_VALUE_WITH_REASON
 #define OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(opname, param, actual, reason)                   \
     QSFA_LOG_INVALID_WITH_REASON(opname, "value", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_VALUES_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_VALUES_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_VALUES_WITH_REASON
 #define OP_LOGE_FOR_INVALID_VALUES_WITH_REASON(opname, param, actual, reason)                  \
     QSFA_LOG_INVALID_WITH_REASON(opname, "values", param, actual, reason)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_FORMAT
+#undef OP_LOGE_FOR_INVALID_FORMAT
+#endif
 #ifndef OP_LOGE_FOR_INVALID_FORMAT
 #define OP_LOGE_FOR_INVALID_FORMAT(opname, param, actual, expected)                            \
     QSFA_LOG_INVALID_WITH_EXPECTED(opname, "format", param, actual, expected)
 #endif
 
+#ifdef OP_LOGE_FOR_INVALID_FORMATS_WITH_REASON
+#undef OP_LOGE_FOR_INVALID_FORMATS_WITH_REASON
+#endif
 #ifndef OP_LOGE_FOR_INVALID_FORMATS_WITH_REASON
 #define OP_LOGE_FOR_INVALID_FORMATS_WITH_REASON(opname, param, actual, reason)                 \
     QSFA_LOG_INVALID_WITH_REASON(opname, "format", param, actual, reason)

@@ -192,7 +192,7 @@ QUANT_MODE MlaPrologTiling::GetQuantizationModeV3Dav() const
     // 卫语句1：weightQuantMode 越界（外层哈希找不到）
     auto wqIt = QUANT_MODE_HASH_TABLE.find(weightQuantMode);
     if (wqIt == QUANT_MODE_HASH_TABLE.end()) {
-        OP_LOGE_FOR_INVALID_VALUE(context_->opName, "weightQuantMode", std::to_string(weightQuantMode),
+        OP_LOGE_FOR_INVALID_VALUE(context_->opName, "weightQuantMode",(std::to_string(weightQuantMode)).c_str(),
                                   "{0, 1, 2, 3, 4, 5}");
         return QUANT_MODE::ERROR_MODE;
     }
@@ -202,7 +202,7 @@ QUANT_MODE MlaPrologTiling::GetQuantizationModeV3Dav() const
     if (kvIt == wqIt->second.end()) {
         auto reasonIt = VALID_KV_REASON_TABLE.find(weightQuantMode);
         const char *reason = (reasonIt != VALID_KV_REASON_TABLE.end()) ? reasonIt->second : "invalid kvQuantMode";
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_->opName, "kvQuantMode", std::to_string(kvQuantMode), reason);
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_->opName, "kvQuantMode",(std::to_string(kvQuantMode)).c_str(), reason);
         return QUANT_MODE::ERROR_MODE;
     }
 
@@ -666,9 +666,8 @@ ge::graphStatus MlaPrologTiling::GenTilingKey() const
         (scenarioInfo_.quantMode_ != QUANT_MODE::NO_QUANT ||
          (scenarioInfo_.cacheMode_ != CACHE_MODE::PA_BSND && scenarioInfo_.cacheMode_ != CACHE_MODE::PA_NZ))) {
         OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(
-            context_->opName, "quantMode",
-            std::to_string(static_cast<uint32_t>(scenarioInfo_.quantMode_)) + ", cacheMode is " +
-                std::to_string(static_cast<uint32_t>(scenarioInfo_.cacheMode_)),
+            context_->opName, "quantMode",(std::to_string(static_cast<uint32_t>(scenarioInfo_.quantMode_)) + ").c_str(),(cacheMode is " +
+                std::to_string(static_cast<uint32_t>(scenarioInfo_.cacheMode_))).c_str(),
             "CV1:1 mode only support quantMode in {NO_QUANT} and cacheMode in {PA_BSND,PA_NZ}");
         return ge::GRAPH_FAILED;
     }

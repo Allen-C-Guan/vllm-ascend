@@ -111,6 +111,13 @@ set(
 
 pybind11_add_module(vllm_ascend_C ${VLLM_ASCEND_SRC})
 
+# Force-include the CANN compat header (same idiom as csrc/CMakeLists.txt):
+# torch_npu 2.13's AclInterface.h references aclmdlRICond* typedefs from the
+# ACL headers vendored by torch_npu, which the pinned CANN predates; the
+# compat header redeclares them so the declarations parse.
+target_compile_options(vllm_ascend_C PRIVATE
+    -include${CMAKE_CURRENT_SOURCE_DIR}/csrc/common/include/cann_compat.h)
+
 if(SOC_VERSION MATCHES "ascend950")
     target_compile_definitions(vllm_ascend_C PRIVATE VLLM_ASCEND_ENABLE_GMM_SITU_QUANT_NATIVE)
     target_include_directories(vllm_ascend_C PRIVATE
