@@ -3,7 +3,8 @@ project(vllm_ascend_C)
 
 # include(CheckCXXcompilerFlag)
 # check_cxx_compiler_flag("-std=c++17", COMPILER_SUPPORTS_CXX17)
-set(CMAKE_CXX_STANDARD 17)
+# torch 2.13 headers require C++20 (TorchConfig.cmake sets CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 20)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
 
@@ -21,9 +22,9 @@ find_package(Torch REQUIRED)
 
 run_python(TORCH_VERSION
   "import torch; print(torch.__version__)" "Failed to locate torch path")
-# check torch version is 2.10.0
-if(NOT ${TORCH_VERSION} VERSION_EQUAL "2.10.0")
-  message(FATAL_ERROR "Expected PyTorch version 2.10.0, but found ${TORCH_VERSION}")
+# check torch version is 2.13.0
+if(NOT ${TORCH_VERSION} VERSION_EQUAL "2.13.0")
+  message(FATAL_ERROR "Expected PyTorch version 2.13.0, but found ${TORCH_VERSION}")
 endif()
 
 set(RUN_MODE "npu" CACHE STRING "cpu/sim/npu")
