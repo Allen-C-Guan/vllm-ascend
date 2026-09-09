@@ -28,3 +28,15 @@ void DlogRecord(int32_t moduleId, int32_t level, const char *fmt, ...);
 #endif
 #define DLOG_PUB_H_
 #endif
+
+// torch_npu 2.13 dev headers (torch_npu/csrc/core/npu/interface/AclInterface.h)
+// declare aclmdlRICond* APIs whose typedefs live in the ACL headers vendored
+// by torch_npu (third_party/acl/inc/acl/acl_rt.h) but not in the pinned CANN
+// 9.1.0-beta.1. Redeclare them exactly as vendored (typedef redeclaration of
+// the same types is well-formed, so this stays correct even when the vendored
+// header is also included); vllm-ascend never calls these APIs.
+#if defined(__cplusplus) && !defined(VLLM_ASCEND_ACLMDL_RI_COND_COMPAT)
+#define VLLM_ASCEND_ACLMDL_RI_COND_COMPAT
+typedef void *aclmdlRICondHandle;
+typedef struct tagAclmdlRICondTaskParams aclmdlRICondTaskParams;
+#endif

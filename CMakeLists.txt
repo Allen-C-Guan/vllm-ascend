@@ -102,10 +102,18 @@ set(
 )
 
 pybind11_add_module(vllm_ascend_C ${VLLM_ASCEND_SRC})
+
 if(SOC_VERSION MATCHES "ascend910_93.*")
   target_compile_definitions(vllm_ascend_C PRIVATE VLLM_ASCEND_ENABLE_SPARSE_KV_OFFLOAD)
   target_link_libraries(vllm_ascend_C PRIVATE OpenMP::OpenMP_CXX)
 endif()
+
+# Force-include the CANN compat header (same idiom as csrc/CMakeLists.txt):
+# torch_npu 2.13's AclInterface.h references aclmdlRICond* typedefs from the
+# ACL headers vendored by torch_npu, which the pinned CANN predates; the
+# compat header redeclares them so the declarations parse.
+target_compile_options(vllm_ascend_C PRIVATE
+    -include${CMAKE_CURRENT_SOURCE_DIR}/csrc/common/include/cann_compat.h)
 
 # Detect aclrtMemcpyBatchAsync availability (CANN 8.5+)
 # Can be overridden via VLLM_ASCEND_ENABLE_BATCH_MEMCPY env var (registered
