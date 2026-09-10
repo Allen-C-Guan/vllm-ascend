@@ -70,6 +70,12 @@ class AscendCompilationConfig:
     fuse_norm_quant: bool = True
     fuse_qknorm_rope: bool = True
     fuse_muls_add: bool = True
+    # "auto" keeps the existing npugraph_ex / fusion_pass inference unchanged.
+    # "inductor" enables the inductor compile-backend track: per-piece
+    # compilation goes through upstream vLLM's InductorAdaptor (compile_fx)
+    # with torch_npu's triton_experimental inductor backend. Incompatible with
+    # enforce_eager=True and -O0 (both disable compilation entirely).
+    compile_backend: Literal["auto", "inductor"] = "auto"
 
     @model_validator(mode="after")
     def _apply_unsupported_hardware_downgrade_and_static_kernel_check(self):
