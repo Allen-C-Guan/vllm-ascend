@@ -102,7 +102,8 @@ The details of each configuration option are as follows:
 
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `enable_npugraph_ex`               | bool | `True` | Whether to enable npugraph_ex backend.                                                 |
+| `compile_backend` | string | `"auto"` | Compile backend track: `"auto"` keeps the legacy `enable_npugraph_ex` inference; `"fusion_pass"` / `"npugraph_ex"` pin one legacy track; `"inductor"` enables the inductor track (upstream Inductor compile_fx + torch_npu `triton_experimental`). The inductor track defaults `cudagraph_mode` to PIECEWISE (explicit NONE allowed; full-graph modes not yet supported) and is incompatible with `enforce_eager=True`, `-O0`, `VLLM_USE_STANDALONE_COMPILE=1`, `VLLM_USE_MEGA_AOT_ARTIFACT=1`, `VLLM_USE_BREAKABLE_CUDAGRAPH=1` and an explicit `enable_npugraph_ex=True` (all raise at config time). |
+| `enable_npugraph_ex`               | bool | `True` | Whether to enable npugraph_ex backend. Ignored (resolved to False) when `compile_backend="inductor"`; an explicit `True` together with the inductor track is rejected. |
 | `enable_static_kernel` | bool | `False` | Whether to enable static kernel. Suitable for scenarios where shape changes are minimal and some time is available for static kernel compilation. |
 | `fuse_norm_quant`  | bool | `True` | Whether to enable fuse_norm_quant pass. |
 | `fuse_qknorm_rope` | bool | `True` | Whether to enable fuse_qknorm_rope pass. If Triton is not in the environment, set it to False. |

@@ -71,14 +71,6 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
-    # Internal carrier for the AscendCompilationConfig.compile_backend track
-    # state ("auto" / "inductor"). Written by
-    # NPUPlatform.check_and_update_config in the engine process before workers
-    # are spawned; read by NPUPlatform.pass_key / get_pass_manager_cls in the
-    # (spawned) worker process, which does not re-run the platform config
-    # hooks. Not a user-facing knob — configure the track via
-    # additional_config["ascend_compilation_config"]["compile_backend"].
-    "VLLM_ASCEND_COMPILE_BACKEND": lambda: os.getenv("VLLM_ASCEND_COMPILE_BACKEND", "auto"),
 }
 
 # end-env-vars-definition

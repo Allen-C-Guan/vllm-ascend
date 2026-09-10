@@ -44,6 +44,15 @@ The default graph path on Ascend involves two stages: **compile-time optimizatio
 | PIECEWISE | Fusion pass only | ACLGraph capture/replay | Disabled |
 | NONE | None | Eager execution | Disabled |
 
+**Inductor compile-backend track** (`ascend_compilation_config.compile_backend="inductor"`):
+the compile-time column of the matrix above is replaced by upstream vLLM's
+Inductor compilation (compile_fx) with torch_npu's `triton_experimental`
+backend, while the runtime column (ACLGraph capture/replay) stays the same.
+The track defaults `cudagraph_mode` to PIECEWISE; an explicit `NONE` keeps
+compile-only (no capture) and full-graph modes are rejected until supported.
+See `ascend_compilation_config.compile_backend` in
+[additional_config](../configuration/additional_config.md).
+
 Additionally, **XliteGraph** is available as an optional alternative graph path for selected model families (see [Using XliteGraph](#using-xlitegraph)).
 
 ## Using ACLGraph

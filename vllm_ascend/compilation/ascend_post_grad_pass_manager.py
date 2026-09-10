@@ -45,6 +45,26 @@ class AscendNoopInductorPass(VllmInductorPass):
         logger.debug("Skipping %s: replaced by AscendNoopInductorPass (not supported on NPU).", self.pass_name)
 
 
+# torch_npu's bernoulli-family lowering only disables cudagraph_trees
+# (V.graph.disable_cudagraphs_reason); the ACLGraph piecewise capture used by
+# vLLM never reads it, so a captured RNG op would silently replay the recorded
+# seed/offset instead of eager semantics (stage design/stage2/03 R2').
+_RNG_OP_MARKER = "bernoulli"
+
+
+def _warn_if_graph_contains_rng(graph: torch.fx.Graph) -> None:
+    """Warn when the post-grad graph contains bernoulli-family RNG ops."""
+    for node in graph.nodes:
+        if node.op == "call_function" and _RNG_OP_MARKER in str(node.target):
+            logger.warning(
+                "Post-grad graph contains a RNG op (%s): under graph capture its replay "
+                "is NOT eager-equivalent (the captured seed/offset is replayed). Verify "
+                "numerical expectations for this model.",
+                node.target,
+            )
+            return
+
+
 class AscendPostGradPassManager(PostGradPassManager):
     """Upstream PostGradPassManager with NPU-unsafe always-on passes disabled.
 
@@ -53,8 +73,12 @@ class AscendPostGradPassManager(PostGradPassManager):
     FX bookkeeping and is kept as-is.
     """
 
+    def __call__(self, graph: torch.fx.Graph) -> None:
+        _warn_if_graph_contains_rng(graph)
+        super().__call__(graph)
+
     def configure(self, config) -> None:
         super().configure(config)
         noop = AscendNoopInductorPass(config)
         noop.pass_name = "FixFunctionalizationPass(noop)"
-        self.fix_functionalization = noop
+        self.fix_functionalization = noop  # todo: Allen 这里为什么会炸？待定位

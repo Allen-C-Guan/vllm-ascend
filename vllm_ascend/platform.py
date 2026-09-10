@@ -32,7 +32,6 @@ from vllm.platforms import Platform, PlatformEnum
 os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1"
 
 
-from vllm_ascend import envs
 from vllm_ascend.ascend_config import get_ascend_config, init_ascend_config
 from vllm_ascend.device.hardware_profile import (
     AttentionBackendFamily,
@@ -135,7 +134,7 @@ class NPUPlatform(Platform):
         key: "graph_fusion_manager" is not a valid torch._inductor config key
         and would make compile_fx's config.patch raise AttributeError.
         """
-        if envs.VLLM_ASCEND_COMPILE_BACKEND == "inductor":
+        if _inductor_track_active():
             return "post_grad_custom_post_pass"
         return COMPILATION_PASS_KEY
 
@@ -208,7 +207,7 @@ class NPUPlatform(Platform):
         NPU; GraphFusionPassManager targets the AscendCompiler fusion-pass
         track and is not a CustomGraphPass subclass).
         """
-        if envs.VLLM_ASCEND_COMPILE_BACKEND == "inductor":
+        if _inductor_track_active():
             return "vllm_ascend.compilation.ascend_post_grad_pass_manager.AscendPostGradPassManager"
         return "vllm_ascend.compilation.graph_fusion_pass_manager.GraphFusionPassManager"
 
@@ -398,17 +397,26 @@ class NPUPlatform(Platform):
 
         compilation_config = vllm_config.compilation_config
         logger.info(
-            "Inductor compile-backend track enabled: backend=inductor, cudagraph_mode=NONE, "
-            "compile_fx via InductorAdaptor, torch inductor npu_backend=triton_experimental."
+            "Inductor compile-backend track enabled: backend=inductor, "
+            "cudagraph_mode=%s (default PIECEWISE since stage2), compile_fx via "
+            "InductorAdaptor, torch inductor npu_backend=triton_experimental.",
+            compilation_config.cudagraph_mode or "PIECEWISE(default)",
         )
         compilation_config.backend = "inductor"
-        if compilation_config.cudagraph_mode not in (None, CUDAGraphMode.NONE):
-            logger.warning(
-                "Inductor compile-backend track overrides user cudagraph_mode=%s with NONE "
-                "(graph capture cooperation is planned for a later stage).",
-                compilation_config.cudagraph_mode,
+        user_cudagraph_mode = compilation_config.cudagraph_mode
+        if user_cudagraph_mode is None:
+            # Track default. -O presets only fill None fields
+            # (VllmConfig._set_config_default), so a non-None value here wins
+            # over the -O1/-O2/-O3 presets unconditionally.
+            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
+        elif user_cudagraph_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
+            pass  # NONE = the previously verified shape, kept when explicit.
+        else:  # FULL / FULL_AND_PIECEWISE / FULL_DECODE_ONLY
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' does not support "
+                f"cudagraph_mode={user_cudagraph_mode} yet: full-graph capture cooperation "
+                "is planned for a later stage. Use NONE or PIECEWISE."
             )
-        compilation_config.cudagraph_mode = CUDAGraphMode.NONE
         # Not verified on NPU; core would derive True once backend == "inductor".
         compilation_config.ir_enable_torch_wrap = False
         for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
@@ -437,6 +445,16 @@ class NPUPlatform(Platform):
         if getattr(ascend_compilation_config, "compile_backend", "auto") != "inductor":
             return
 
+        # VLLM_USE_BREAKABLE_CUDAGRAPH (user-set or auto-enabled for some model
+        # architectures, vllm.py:1212-1230) forces compilation mode to NONE and
+        # would silently disable the track.
+        if envs_vllm.VLLM_USE_BREAKABLE_CUDAGRAPH:
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' is incompatible with "
+                "VLLM_USE_BREAKABLE_CUDAGRAPH=1 (it forces compilation mode to NONE; the "
+                "variable may have been auto-enabled for this model architecture)."
+            )
+
         compilation_config = vllm_config.compilation_config
         if compilation_config.backend != "inductor":
             logger.warning(
@@ -454,9 +472,6 @@ class NPUPlatform(Platform):
             )
         else:
             os.environ["TORCHINDUCTOR_NPU_BACKEND"] = "triton_experimental"
-
-        # Cross-spawn track-state carrier for pass_key / get_pass_manager_cls.
-        os.environ["VLLM_ASCEND_COMPILE_BACKEND"] = "inductor"
 
         # Force InductorAdaptor (compile_fx): standalone_compile has no
         # torch_npu adaptation. Fail fast on explicit user overrides.
@@ -1240,6 +1255,17 @@ def _validate_kv_load_failure_policy(vllm_config: VllmConfig) -> None:
             raise AssertionError("Hybrid models do not support recompute mode kv load failure policy now.")
 
 
+def _inductor_track_backend(vllm_config: VllmConfig) -> str | None:
+    """The raw compile_backend value from additional_config, or None.
+
+    Usable from both platform config hooks: the early hook runs before
+    init_ascend_config parses the typed AscendConfig.
+    """
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    ascend_compilation_config = additional_config.get("ascend_compilation_config") or {}
+    return ascend_compilation_config.get("compile_backend")
+
+
 def _inductor_track_enabled(vllm_config: VllmConfig) -> bool:
     """Whether the inductor compile-backend track is requested.
 
@@ -1247,9 +1273,27 @@ def _inductor_track_enabled(vllm_config: VllmConfig) -> bool:
     apply_config_platform_defaults, which runs before init_ascend_config
     parses the typed AscendConfig.
     """
-    additional_config = getattr(vllm_config, "additional_config", None) or {}
-    ascend_compilation_config = additional_config.get("ascend_compilation_config") or {}
-    return ascend_compilation_config.get("compile_backend") == "inductor"
+    return _inductor_track_backend(vllm_config) == "inductor"
+
+
+def _inductor_track_active() -> bool:
+    """Whether the CURRENT engine's Ascend compilation config selects the
+    inductor track.
+
+    Reads the AscendConfig singleton, which init_ascend_config refreshes at
+    each engine construction (check_and_update_config step 5 and
+    worker init, both before model load). This lets the platform hooks that
+    receive no vllm_config (pass_key / get_pass_manager_cls) observe
+    per-engine state — no process-global env carrier that could leak across
+    engines and need manual cleanup.
+    """
+    try:
+        ascend_config = get_ascend_config()
+    except RuntimeError:
+        # No engine constructed yet in this process (e.g. direct platform
+        # use in tests): legacy behavior.
+        return False
+    return ascend_config.ascend_compilation_config.compile_backend == "inductor"
 
 
 def _update_compilation_modes(vllm_config: VllmConfig, ascend_config) -> None:
@@ -1444,6 +1488,18 @@ def _setup_compile_backend(
             "need ASCEND_LAUNCH_BLOCKING for debugging, consider other methods — "
             "for example, check the plog files (default: $HOME/ascend/log/debug) "
             "for more information about runtime errors."
+        )
+
+    # The explicit npugraph_ex track only makes sense with full-graph capture
+    # modes (see graph_mode.md); cg=NONE would silently compile nothing.
+    if (
+        _inductor_track_backend(vllm_config) == "npugraph_ex"
+        and compilation_config.cudagraph_mode == CUDAGraphMode.NONE
+    ):
+        raise ValueError(
+            "ascend_compilation_config.compile_backend='npugraph_ex' requires a "
+            "full-graph cudagraph_mode (FULL / FULL_DECODE_ONLY / FULL_AND_PIECEWISE), "
+            f"got cudagraph_mode={compilation_config.cudagraph_mode}."
         )
 
 
