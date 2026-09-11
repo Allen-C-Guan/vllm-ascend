@@ -17,7 +17,11 @@
 #
 import torch
 from torch._inductor.pattern_matcher import PatternMatcherPass
-from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
+from vllm.compilation.passes.inductor_pass import InductorPass
+from vllm.compilation.passes.vllm_inductor_pass import (
+    VllmInductorPass,
+    VllmPatternMatcherPass,
+)
 from vllm.config import VllmConfig
 from vllm.config.compilation import Range
 from vllm.logger import logger
@@ -364,6 +368,9 @@ class AddRMSNormQuantFusionPass(VllmInductorPass):
     def __init__(self, vllm_config: VllmConfig):
         super().__init__(vllm_config)
         self.pattern_match_passes: PatternMatcherPass = PatternMatcherPass(pass_name="rmsnorm_quant_fusion_pass")
+        # uuid factors (stage3 03 R3-5): pattern-set branches must fold into the
+        # cache key (dtype / W4A4 skip / A5 MX branch / enable_custom_op).
+        self._uuid_factors: dict = {"dtype": str(vllm_config.model_config.dtype)}
 
         dtype = vllm_config.model_config.dtype
         if dtype not in (torch.bfloat16, torch.float16):
@@ -376,7 +383,11 @@ class AddRMSNormQuantFusionPass(VllmInductorPass):
                 "W4A4 quantized weights, which are incompatible with the "
                 "norm-quant fusion pass."
             )
+            self._uuid_factors["w4a4_skip"] = "1"
             return
+        self._uuid_factors["w4a4_skip"] = "0"
+        self._uuid_factors["device"] = str(get_ascend_device_type())
+        self._uuid_factors["custom_op"] = str(enable_custom_op())
 
         common_epsilons = [1e-5, 1e-6]
 
@@ -390,9 +401,13 @@ class AddRMSNormQuantFusionPass(VllmInductorPass):
                 AddRMSNormQuantPatternWithBias(vllm_config, eps=eps).register(self.pattern_match_passes)
                 AddRMSNormDynamicQuantPatternWithBias(vllm_config, eps=eps).register(self.pattern_match_passes)
 
+    def uuid(self) -> str:
+        return InductorPass.hash_dict({"src": super().uuid(), **self._uuid_factors})
+
     def __call__(self, graph: torch.fx.Graph):
         self.begin()
         self.matched_count = self.pattern_match_passes.apply(graph)
+        VllmPatternMatcherPass.match_table[self.pattern_match_passes.pass_name] += self.matched_count
         logger.debug("Replaced %s patterns", self.matched_count)
         self.end_and_log()
 

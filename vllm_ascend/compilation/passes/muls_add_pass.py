@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import torch
 from torch._inductor.pattern_matcher import PatternMatcherPass
-from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
+from vllm.compilation.passes.inductor_pass import InductorPass
+from vllm.compilation.passes.vllm_inductor_pass import (
+    VllmInductorPass,
+    VllmPatternMatcherPass,
+)
 from vllm.config import VllmConfig
 from vllm.config.compilation import Range
 from vllm.logger import logger
@@ -82,6 +86,10 @@ class MulsAddFusionPass(VllmInductorPass):
     def __init__(self, vllm_config: VllmConfig):
         super().__init__(vllm_config)
         self.pattern_match_passes: PatternMatcherPass = PatternMatcherPass(pass_name="muls_add_fusion_pass")
+        # uuid factors (stage3 03 R3-5): config branches change the registered
+        # pattern set, so they must fold into the cache key — the inherited
+        # source-hash uuid alone would collide across different scales.
+        self._uuid_factors: dict = {"dtype": str(vllm_config.model_config.dtype)}
 
         # For now we enable this pass for all floating-point dtypes that the
         # model is configured to use.
@@ -91,11 +99,16 @@ class MulsAddFusionPass(VllmInductorPass):
             return
 
         routed_scaling_factor = getattr(vllm_config.model_config.hf_text_config, "routed_scaling_factor", 1.0)
+        self._uuid_factors["scale"] = str(routed_scaling_factor)
         MulsAddPattern(vllm_config, scale=routed_scaling_factor).register(self.pattern_match_passes)
+
+    def uuid(self) -> str:
+        return InductorPass.hash_dict({"src": super().uuid(), **self._uuid_factors})
 
     def __call__(self, graph: torch.fx.Graph) -> None:  # type: ignore[override]
         self.begin()
         self.matched_count = self.pattern_match_passes.apply(graph)
+        VllmPatternMatcherPass.match_table[self.pattern_match_passes.pass_name] += self.matched_count
         logger.debug("Fused %s muls_add patterns", self.matched_count)
         self.end_and_log()
 

@@ -49,7 +49,14 @@ the compile-time column of the matrix above is replaced by upstream vLLM's
 Inductor compilation (compile_fx) with torch_npu's `triton_experimental`
 backend, while the runtime column (ACLGraph capture/replay) stays the same.
 The track defaults `cudagraph_mode` to PIECEWISE; an explicit `NONE` keeps
-compile-only (no capture) and full-graph modes are rejected until supported.
+compile-only (no capture). The full-graph family is supported with
+upstream-aligned semantics: `FULL_AND_PIECEWISE` compiles the piecewise path
+and captures a full graph for uniform decode batches, while `FULL` /
+`FULL_DECODE_ONLY` compile the whole model as a single graph
+(`splitting_ops=[]`, attention stays inside the compiled graph) and capture
+one full graph per batch size (decode-only for `FULL_DECODE_ONLY`; mixed
+batches then run the compiled graph ungraphed). Full-graph modes must be
+passed explicitly — the track default PIECEWISE wins over the `-O` presets.
 See `ascend_compilation_config.compile_backend` in
 [additional_config](../configuration/additional_config.md).
 

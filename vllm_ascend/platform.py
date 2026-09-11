@@ -409,14 +409,29 @@ class NPUPlatform(Platform):
             # (VllmConfig._set_config_default), so a non-None value here wins
             # over the -O1/-O2/-O3 presets unconditionally.
             compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
-        elif user_cudagraph_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
-            pass  # NONE = the previously verified shape, kept when explicit.
-        else:  # FULL / FULL_AND_PIECEWISE / FULL_DECODE_ONLY
-            raise ValueError(
-                "ascend_compilation_config.compile_backend='inductor' does not support "
-                f"cudagraph_mode={user_cudagraph_mode} yet: full-graph capture cooperation "
-                "is planned for a later stage. Use NONE or PIECEWISE."
-            )
+        elif user_cudagraph_mode in (
+            CUDAGraphMode.NONE,
+            CUDAGraphMode.PIECEWISE,
+            CUDAGraphMode.FULL,
+            CUDAGraphMode.FULL_AND_PIECEWISE,
+            CUDAGraphMode.FULL_DECODE_ONLY,
+        ):
+            # Explicit values are honored as-is. NONE = the previously verified
+            # stage-1 shape; PIECEWISE = the stage-2 default. Since stage3 the
+            # full-graph family is supported (upstream-aligned): FULL_AND_PIECEWISE
+            # flows through the PIECEWISE branch of _setup_compile_backend and gets
+            # an outer FULL ACLGraphWrapper on the decode leg; FULL /
+            # FULL_DECODE_ONLY take the upstream single-graph shape (splitting_ops=[]).
+            if user_cudagraph_mode in (
+                CUDAGraphMode.FULL,
+                CUDAGraphMode.FULL_AND_PIECEWISE,
+                CUDAGraphMode.FULL_DECODE_ONLY,
+            ):
+                logger.info(
+                    "Inductor track: explicit cudagraph_mode=%s accepted "
+                    "(full-graph capture leg, stage3).",
+                    user_cudagraph_mode,
+                )
         # Not verified on NPU; core would derive True once backend == "inductor".
         compilation_config.ir_enable_torch_wrap = False
         for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
