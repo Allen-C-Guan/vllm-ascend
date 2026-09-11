@@ -6,11 +6,23 @@ import torch
 import torch._inductor.pattern_matcher as pm
 from torch._inductor.pattern_matcher import PatternMatcherPass
 from vllm.config import VllmConfig
+from vllm.logger import logger
 
 try:
     import npugraph_ex as nge
 except ImportError:
-    import torchair as nge
+    try:
+        import torchair as nge
+    except ImportError:
+        # stage3 R3-6: neither legacy graph package is installed — the torch
+        # inductor pattern registration below still works; only the (unused on
+        # the inductor track) nge global table is skipped. Degrade instead of
+        # crashing configure.
+        nge = None
+        logger.warning(
+            "npugraph_ex/torchair both unavailable: Ascend fusion patterns will "
+            "register to torch inductor only (nge registration skipped)."
+        )
 
 from vllm_ascend.compilation.passes.utils.npugraph_ex_utils_check import extra_stream_scope_check
 
@@ -74,7 +86,7 @@ class BasePattern(ABC):
             pm.register_replacement(pattern_fn, replacement_fn, example_inputs, pm.fwd_only, pm_pass)
             registered.add(pattern_id)
 
-        if pattern_id not in _registered_patterns:
+        if nge is not None and pattern_id not in _registered_patterns:
             nge.register_replacement(
                 search_fn=pattern_fn,
                 replace_fn=replacement_fn,

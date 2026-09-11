@@ -388,7 +388,12 @@ class TestTrackCudagraphMode(TrackTestBase):
         NPUPlatform._apply_inductor_track_defaults(vllm_config)
         self.assertEqual(vllm_config.compilation_config.cudagraph_mode, CUDAGraphMode.NONE)
 
-    def test_full_modes_raise(self):
+    def test_full_family_modes_accepted(self):
+        """Stage3 U6（三值全开）：FULL 族三值早 hook 放行，值原样保留、backend=inductor。
+
+        迁移自 stage2 ``test_full_modes_raise``（契约迁移纪律 04 §T3-2：删除的只是
+        错误文案中自声明「stage-3 支持」的临时约束，换等强度正向断言）。
+        """
         from vllm_ascend.platform import NPUPlatform
 
         for mode in (
@@ -399,8 +404,97 @@ class TestTrackCudagraphMode(TrackTestBase):
             with self.subTest(mode=mode):
                 vllm_config = self._make_vllm_config("inductor")
                 vllm_config.compilation_config.cudagraph_mode = mode
-                with self.assertRaises(ValueError):
-                    NPUPlatform._apply_inductor_track_defaults(vllm_config)
+                NPUPlatform._apply_inductor_track_defaults(vllm_config)
+                self.assertEqual(vllm_config.compilation_config.cudagraph_mode, mode)
+                self.assertEqual(vllm_config.compilation_config.backend, "inductor")
+
+    def test_explicit_full_family_survives_o2_preset(self):
+        """R3-13：显式 FULL 族 cg 在 -O2 preset 下存活（preset 只填 None 字段）。"""
+        for mode in (
+            CUDAGraphMode.FULL,
+            CUDAGraphMode.FULL_AND_PIECEWISE,
+            CUDAGraphMode.FULL_DECODE_ONLY,
+        ):
+            with self.subTest(mode=mode):
+                with patch(
+                    "vllm_ascend.platform.NPUPlatform.check_and_update_config"
+                ), patch(
+                    "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
+                    return_value=None,
+                ):
+                    vllm_config = VllmConfig(
+                        optimization_level=OptimizationLevel.O2,
+                        compilation_config=CompilationConfig(cudagraph_mode=mode),
+                        additional_config={"ascend_compilation_config": {"compile_backend": "inductor"}},
+                    )
+                if vllm_config.device_config.device_type != "npu":
+                    self.skipTest("current_platform did not resolve to npu")
+                self.assertEqual(vllm_config.compilation_config.cudagraph_mode, mode)
+                self.assertEqual(vllm_config.compilation_config.backend, "inductor")
+
+
+class TestTrackFullFamilyBranches(TrackTestBase):
+    """Stage3 U6：三 cg 值在晚 hook `_setup_compile_backend` 的分支走位。
+
+    - FULL_AND_PIECEWISE → requires_piecewise_compilation()=True → PIECEWISE 分支
+      （splitting_ops 填充含 mla/dsa，npugraph_ex 关）——与 stage-2 已验收形态同构；
+    - FULL / FULL_DECODE_ONLY → has_full_cudagraphs() 分支 → splitting_ops=[]
+      （上游对齐形态：单图整编译，D3-4 修订；T0''-1 纯 FULL/FDO 探针已实证）。
+    """
+
+    @staticmethod
+    def _make_stub(cg) -> SimpleNamespace:
+        compilation_config = CompilationConfig()
+        compilation_config.mode = CompilationMode.VLLM_COMPILE
+        compilation_config.cudagraph_mode = cg
+        return SimpleNamespace(
+            compilation_config=compilation_config,
+            additional_config={
+                "ascend_compilation_config": {
+                    "compile_backend": "inductor",
+                    # step-6 (_update_compilation_modes) 已把解析后的 False 同步进来
+                    "enable_npugraph_ex": False,
+                    "enable_static_kernel": False,
+                }
+            },
+            model_config=SimpleNamespace(enforce_eager=False),
+            parallel_config=SimpleNamespace(
+                all2all_backend="flashinfer_all2allv",
+                tensor_parallel_size=1,
+                data_parallel_size=1,
+            ),
+            _set_cudagraph_sizes=lambda: None,
+        )
+
+    def _run(self, cg):
+        from vllm_ascend.platform import _setup_compile_backend
+
+        vllm_config = self._make_stub(cg)
+        with patch("vllm_ascend.platform.enable_sp", return_value=False):
+            _setup_compile_backend(
+                vllm_config,
+                compile_backend="vllm_ascend.compilation.compiler_interface.AscendCompiler",
+            )
+        return vllm_config
+
+    def test_full_and_piecewise_takes_piecewise_branch(self):
+        vllm_config = self._run(CUDAGraphMode.FULL_AND_PIECEWISE)
+        cc = vllm_config.compilation_config
+        self.assertTrue(cc.splitting_ops, "PIECEWISE 分支应填充 splitting_ops")
+        self.assertIn("vllm::mla_forward", cc.splitting_ops)
+        self.assertIn("vllm::dsa_forward", cc.splitting_ops)
+        self.assertFalse(vllm_config.additional_config["ascend_compilation_config"]["enable_npugraph_ex"])
+        self.assertEqual(cc.cudagraph_mode, CUDAGraphMode.FULL_AND_PIECEWISE)
+
+    def test_full_and_full_decode_only_take_upstream_aligned_branch(self):
+        for mode in (CUDAGraphMode.FULL, CUDAGraphMode.FULL_DECODE_ONLY):
+            with self.subTest(mode=mode):
+                vllm_config = self._run(mode)
+                cc = vllm_config.compilation_config
+                self.assertEqual(cc.splitting_ops, [], "上游对齐形态应清空 splitting_ops（单图整编译）")
+                self.assertEqual(cc.cudagraph_mode, mode)
+                # inductor 轨上该分支不写 npugraph_ex（step-6 已同步 False，保持不变）
+                self.assertFalse(vllm_config.additional_config["ascend_compilation_config"]["enable_npugraph_ex"])
 
 
 class TestNpugraphExTrackGuard(TrackTestBase):
