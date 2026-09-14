@@ -150,7 +150,10 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
         self.assertNotEqual(cc.cudagraph_mode, CUDAGraphMode.NONE)
         self.assertTrue(cc.inductor_compile_config.get("combo_kernels", True))
 
-    def test_track_on_derives_inductor_semantics(self):
+    def test_track_on_leaves_cudagraph_mode_to_preset(self):
+        """Debt 2 (ledger 13): the early hook no longer fills a cudagraph_mode
+        default — None stays None so the -O presets own it (O1 -> PIECEWISE,
+        O2/O3 -> FULL_AND_PIECEWISE, upstream semantics)."""
         from vllm_ascend.platform import NPUPlatform, _INDUCTOR_TRACK_PASS_FLAGS_OFF
 
         vllm_config = self._make_vllm_config("inductor")
@@ -159,7 +162,7 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
         NPUPlatform._apply_inductor_track_defaults(vllm_config)
         cc = vllm_config.compilation_config
         self.assertEqual(cc.backend, "inductor")
-        self.assertEqual(cc.cudagraph_mode, CUDAGraphMode.PIECEWISE)
+        self.assertIsNone(cc.cudagraph_mode)
         self.assertFalse(cc.ir_enable_torch_wrap)
         self.assertFalse(cc.inductor_compile_config["combo_kernels"])
         self.assertFalse(cc.inductor_compile_config["benchmark_combo_kernel"])
@@ -185,7 +188,8 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
         self.assertIn("none", cc.custom_ops)
         self.assertNotIn("all", cc.custom_ops)
         self.assertEqual(cc.mode, CompilationMode.VLLM_COMPILE)
-        self.assertEqual(cc.cudagraph_mode, CUDAGraphMode.PIECEWISE)
+        # Debt 2: default -O2 journey — the presets now own the track default.
+        self.assertEqual(cc.cudagraph_mode, CUDAGraphMode.FULL_AND_PIECEWISE)
 
     def test_track_on_rejects_enforce_eager(self):
         from vllm_ascend.platform import NPUPlatform
@@ -359,12 +363,18 @@ class TestCompileBackendEnum(TrackTestBase):
 
 
 class TestTrackCudagraphMode(TrackTestBase):
-    """Stage2: track default cudagraph_mode=PIECEWISE; explicit values honored."""
+    """Debt 2 (ledger 13): the track default follows the -O presets
+    (O1 -> PIECEWISE, O2/O3 -> FULL_AND_PIECEWISE); explicit values honored."""
 
-    def test_default_is_piecewise_for_all_optimization_levels(self):
+    def test_default_follows_optimization_level_preset(self):
         from vllm_ascend.platform import NPUPlatform
 
-        for level in (OptimizationLevel.O1, OptimizationLevel.O2, OptimizationLevel.O3):
+        expected = {
+            OptimizationLevel.O1: CUDAGraphMode.PIECEWISE,
+            OptimizationLevel.O2: CUDAGraphMode.FULL_AND_PIECEWISE,
+            OptimizationLevel.O3: CUDAGraphMode.FULL_AND_PIECEWISE,
+        }
+        for level, want in expected.items():
             with self.subTest(level=level):
                 with patch(
                     "vllm_ascend.platform.NPUPlatform.check_and_update_config"
@@ -378,7 +388,7 @@ class TestTrackCudagraphMode(TrackTestBase):
                     )
                 if vllm_config.device_config.device_type != "npu":
                     self.skipTest("current_platform did not resolve to npu")
-                self.assertEqual(vllm_config.compilation_config.cudagraph_mode, CUDAGraphMode.PIECEWISE)
+                self.assertEqual(vllm_config.compilation_config.cudagraph_mode, want)
 
     def test_explicit_none_kept(self):
         from vllm_ascend.platform import NPUPlatform

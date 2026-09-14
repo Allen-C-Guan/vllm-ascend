@@ -398,40 +398,32 @@ class NPUPlatform(Platform):
         compilation_config = vllm_config.compilation_config
         logger.info(
             "Inductor compile-backend track enabled: backend=inductor, "
-            "cudagraph_mode=%s (default PIECEWISE since stage2), compile_fx via "
-            "InductorAdaptor, torch inductor npu_backend=triton_experimental.",
-            compilation_config.cudagraph_mode or "PIECEWISE(default)",
+            "cudagraph_mode=%s, compile_fx via InductorAdaptor, torch inductor "
+            "npu_backend=triton_experimental.",
+            compilation_config.cudagraph_mode
+            or "unset (default deferred to the -O preset)",
         )
         compilation_config.backend = "inductor"
-        user_cudagraph_mode = compilation_config.cudagraph_mode
-        if user_cudagraph_mode is None:
-            # Track default. -O presets only fill None fields
-            # (VllmConfig._set_config_default), so a non-None value here wins
-            # over the -O1/-O2/-O3 presets unconditionally.
-            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
-        elif user_cudagraph_mode in (
-            CUDAGraphMode.NONE,
-            CUDAGraphMode.PIECEWISE,
+        # The track no longer pins a cudagraph_mode default (debt 2, ledger 13):
+        # leave None for the -O presets (vllm.py:1299 fills None fields only),
+        # giving O1 -> PIECEWISE, O2/O3 -> FULL_AND_PIECEWISE — upstream
+        # semantics. Invariant: nothing may read cudagraph_mode between this
+        # early hook (vllm.py:1270) and the presets (vllm.py:1299).
+        if compilation_config.cudagraph_mode in (
             CUDAGraphMode.FULL,
             CUDAGraphMode.FULL_AND_PIECEWISE,
             CUDAGraphMode.FULL_DECODE_ONLY,
         ):
-            # Explicit values are honored as-is. NONE = the previously verified
-            # stage-1 shape; PIECEWISE = the stage-2 default. Since stage3 the
-            # full-graph family is supported (upstream-aligned): FULL_AND_PIECEWISE
-            # flows through the PIECEWISE branch of _setup_compile_backend and gets
-            # an outer FULL ACLGraphWrapper on the decode leg; FULL /
-            # FULL_DECODE_ONLY take the upstream single-graph shape (splitting_ops=[]).
-            if user_cudagraph_mode in (
-                CUDAGraphMode.FULL,
-                CUDAGraphMode.FULL_AND_PIECEWISE,
-                CUDAGraphMode.FULL_DECODE_ONLY,
-            ):
-                logger.info(
-                    "Inductor track: explicit cudagraph_mode=%s accepted "
-                    "(full-graph capture leg, stage3).",
-                    user_cudagraph_mode,
-                )
+            # Explicit full-graph values are honored as-is (since stage3):
+            # FULL_AND_PIECEWISE flows through the PIECEWISE branch of
+            # _setup_compile_backend and gets an outer FULL ACLGraphWrapper on
+            # the decode leg; FULL / FULL_DECODE_ONLY take the upstream
+            # single-graph shape (splitting_ops=[]).
+            logger.info(
+                "Inductor track: explicit cudagraph_mode=%s accepted "
+                "(full-graph capture leg, stage3).",
+                compilation_config.cudagraph_mode,
+            )
         # Not verified on NPU; core would derive True once backend == "inductor".
         compilation_config.ir_enable_torch_wrap = False
         for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
@@ -695,6 +687,15 @@ class NPUPlatform(Platform):
 
         # 10.Set pytorch NPU allocator env (vllm_config)
         _set_pytorch_npu_alloc_env(vllm_config)
+
+        if _inductor_track_enabled(vllm_config):
+            # Final value AFTER steps 6/7 may have adjusted it (e.g. xlite or
+            # encoder-decoder downgrades); the early hook runs before the -O
+            # presets, so it cannot log the effective mode (debt 2).
+            logger.info(
+                "Inductor compile-backend track active: cudagraph_mode=%s (final).",
+                vllm_config.compilation_config.cudagraph_mode,
+            )
 
     @classmethod
     def set_additional_forward_context(
