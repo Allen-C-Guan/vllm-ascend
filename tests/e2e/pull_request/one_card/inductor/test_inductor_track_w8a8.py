@@ -18,6 +18,7 @@ Acceptance (stage3/04 §T3-5):
 import os
 
 import pytest
+from vllm.config.compilation import CUDAGraphMode, CompilationConfig
 
 from tests.e2e.conftest import wait_until_npu_memory_free
 from tests.e2e.pull_request.utils import PROMPTS_SHORT, compare_logprobs
@@ -35,12 +36,18 @@ pytestmark = [
     ),
 ]
 
+# Explicit PIECEWISE: this file guards the W8A8 fusion chain, not the graph
+# family — pin the stage3-verified shape (debt-2 refactor moved the track
+# default to the -O presets, O2 -> FULL_AND_PIECEWISE).
+_TRACK_CG = CompilationConfig(cudagraph_mode=CUDAGraphMode.PIECEWISE)
+
 
 def _track_kwargs(weight_nz_mode: int) -> dict:
     return {
         "model_name": _W8A8_MODEL,
         "quantization": "ascend",
         "max_model_len": 1024,
+        "compilation_config": _TRACK_CG,
         "additional_config": {
             "ascend_compilation_config": {"compile_backend": "inductor"},
             "weight_nz_mode": weight_nz_mode,
@@ -91,6 +98,7 @@ def test_w8a8_fusion_match_table_recorded():
         dtype="bfloat16",
         max_model_len=1024,
         gpu_memory_utilization=0.55,
+        compilation_config=_TRACK_CG,
         additional_config={
             "ascend_compilation_config": {"compile_backend": "inductor"},
             "weight_nz_mode": 0,
@@ -137,6 +145,7 @@ def test_w8a8_static_fusion_match_table():
         max_model_len=1024,
         gpu_memory_utilization=0.85,
         max_num_seqs=4,
+        compilation_config=_TRACK_CG,
         additional_config={
             "ascend_compilation_config": {"compile_backend": "inductor"},
             "weight_nz_mode": 0,

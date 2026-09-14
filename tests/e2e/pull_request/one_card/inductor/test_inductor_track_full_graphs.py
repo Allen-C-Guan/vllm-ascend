@@ -1,4 +1,6 @@
-"""Stage3 e2e: inductor track with the full-graph capture family (U6, three cg values).
+"""Stage3 e2e: inductor track with the full-graph capture family (U6, three cg values)
+plus the DEFAULT tier added by the debt-2 refactor (no explicit cg — the -O2 preset
+must fill FULL_AND_PIECEWISE; refactor1 M1).
 
 Mirrors the T0''-1 probe (stage design/stage3/_notes/t0_probe/RESULTS.md): in-process
 engine + NPUGraph init/replay spies grouped by forward_context.cudagraph_runtime_mode.
@@ -55,11 +57,18 @@ def _run_track(cg_mode_name: str):
     before_pieces = compilation_counter.num_piecewise_capturable_graphs_seen
     before_captured = compilation_counter.num_cudagraph_captured
 
-    cg_mode = {
-        "FULL_AND_PIECEWISE": CUDAGraphMode.FULL_AND_PIECEWISE,
-        "FULL": CUDAGraphMode.FULL,
-        "FULL_DECODE_ONLY": CUDAGraphMode.FULL_DECODE_ONLY,
-    }[cg_mode_name]
+    runner_kwargs = {}
+    if cg_mode_name == "DEFAULT":
+        # Debt 2 (ledger 13): default journey — no explicit cudagraph_mode; the
+        # -O2 preset must fill FULL_AND_PIECEWISE (upstream semantics).
+        pass
+    else:
+        cg_mode = {
+            "FULL_AND_PIECEWISE": CUDAGraphMode.FULL_AND_PIECEWISE,
+            "FULL": CUDAGraphMode.FULL,
+            "FULL_DECODE_ONLY": CUDAGraphMode.FULL_DECODE_ONLY,
+        }[cg_mode_name]
+        runner_kwargs["compilation_config"] = CompilationConfig(cudagraph_mode=cg_mode)
 
     counts = {"init": 0, "replay": 0}
     by_mode = {"init": {}, "replay": {}}
@@ -81,6 +90,7 @@ def _run_track(cg_mode_name: str):
         bump("replay")
         return orig_replay(self, *args, **kwargs)
 
+    final_cg = None
     with patch.object(torch.npu.NPUGraph, "__init__", init_spy), patch.object(
         torch.npu.NPUGraph, "replay", replay_spy
     ):
@@ -96,9 +106,13 @@ def _run_track(cg_mode_name: str):
             # 60.96 GiB = 33.5 GiB fits the 0.6B model + KV + graphs comfortably
             gpu_memory_utilization=0.55,
             max_num_seqs=16,
-            compilation_config=CompilationConfig(cudagraph_mode=cg_mode),
             additional_config={"ascend_compilation_config": {"compile_backend": "inductor"}},
+            **runner_kwargs,
         ) as runner:
+            try:
+                final_cg = runner.model.llm_engine.vllm_config.compilation_config.cudagraph_mode
+            except Exception:
+                final_cg = None
             outs = runner.model.generate(
                 PROMPTS, SamplingParams(max_tokens=MAX_TOKENS, temperature=0.0)
             )
@@ -108,6 +122,7 @@ def _run_track(cg_mode_name: str):
         "by_mode": by_mode,
         "pieces_delta": compilation_counter.num_piecewise_capturable_graphs_seen - before_pieces,
         "captured_delta": compilation_counter.num_cudagraph_captured - before_captured,
+        "final_cg": final_cg,
     }, outs
 
 
@@ -121,12 +136,20 @@ def _piecewise_group(by_mode, kind) -> dict:
     return {k: v for k, v in by_mode[kind].items() if k.startswith("PIECEWISE@")}
 
 
-@pytest.mark.parametrize("cg_mode_name", ["FULL_AND_PIECEWISE", "FULL", "FULL_DECODE_ONLY"])
+@pytest.mark.parametrize("cg_mode_name", ["DEFAULT", "FULL_AND_PIECEWISE", "FULL", "FULL_DECODE_ONLY"])
 @wait_until_npu_memory_free(max_wait_seconds=240)  # in-process engines release HBM slowly
 def test_inductor_track_full_graph_family(cg_mode_name):
     result, outs = _run_track(cg_mode_name)
     counts = result["counts"]
     by_mode = result["by_mode"]
+    # DEFAULT tier exercises the debt-2 default journey: effective mode must be
+    # the -O2 preset value (FULL_AND_PIECEWISE), asserted on the final config.
+    effective = "FULL_AND_PIECEWISE" if cg_mode_name == "DEFAULT" else cg_mode_name
+    if cg_mode_name == "DEFAULT":
+        assert result["final_cg"] is not None, "could not read final cudagraph_mode"
+        assert str(result["final_cg"]).endswith("FULL_AND_PIECEWISE"), (
+            f"preset-sourced default expected FULL_AND_PIECEWISE, got {result['final_cg']}"
+        )
 
     texts = [o.outputs[0].text for o in outs]
     for text in texts:
@@ -144,7 +167,7 @@ def test_inductor_track_full_graph_family(cg_mode_name):
         f"counter delta {result['captured_delta']} != spy init {counts['init']}"
     )
 
-    if cg_mode_name == "FULL_AND_PIECEWISE":
+    if effective == "FULL_AND_PIECEWISE":
         # P*S_pw (PIECEWISE leg: every piece per size) + 1*S_f (FULL leg)
         assert _piecewise_group(by_mode, "init"), "PIECEWISE leg inner captures missing"
         piecewise_sizes = {k.split("@")[1] for k in _piecewise_group(by_mode, "init")}
@@ -160,7 +183,7 @@ def test_inductor_track_full_graph_family(cg_mode_name):
             f"single compiled graph expected (splitting_ops=[]), pieces delta {result['pieces_delta']}"
         )
         total_replays = sum(full_replay.values())
-        if cg_mode_name == "FULL":
+        if effective == "FULL":
             # every decode step dispatches a FULL graph, mixed steps included
             assert total_replays >= MAX_TOKENS, (
                 f"FULL: expected >= {MAX_TOKENS} full-graph replays, got {total_replays}"

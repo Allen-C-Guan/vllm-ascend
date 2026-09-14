@@ -7,6 +7,7 @@ output to the eager TP=2 baseline under the same sampling seed.
 
 import pytest
 from vllm import LLM, SamplingParams
+from vllm.config.compilation import CUDAGraphMode, CompilationConfig
 
 PROMPTS = [
     "The capital of France is",
@@ -19,6 +20,14 @@ _BASE = dict(
     max_model_len=4096,
     max_num_seqs=16,
     tensor_parallel_size=2,
+)
+
+# Explicit PIECEWISE: since the debt-2 refactor the track default follows the
+# -O presets (O2 -> FULL_AND_PIECEWISE); F&P x TP=2 is an unverified gap, so
+# this stage2 baseline pins the shape it was built to guard (ledger 13, debt 2).
+_TRACK = dict(
+    additional_config={"ascend_compilation_config": {"compile_backend": "inductor"}},
+    compilation_config=CompilationConfig(cudagraph_mode=CUDAGraphMode.PIECEWISE),
 )
 
 
@@ -34,9 +43,7 @@ def _generate(kwargs):
 def test_inductor_track_tp2(mode):
     kwargs = dict(_BASE)
     if mode == "inductor":
-        kwargs["additional_config"] = {
-            "ascend_compilation_config": {"compile_backend": "inductor"}
-        }
+        kwargs.update(_TRACK)
     else:
         kwargs["enforce_eager"] = True
     texts = _generate(kwargs)
@@ -46,10 +53,7 @@ def test_inductor_track_tp2(mode):
 
 def test_inductor_track_tp2_matches_eager():
     eager_kwargs = dict(_BASE, enforce_eager=True)
-    track_kwargs = dict(
-        _BASE,
-        additional_config={"ascend_compilation_config": {"compile_backend": "inductor"}},
-    )
+    track_kwargs = dict(_BASE, **_TRACK)
     eager_texts = _generate(eager_kwargs)
     track_texts = _generate(track_kwargs)
     assert track_texts == eager_texts
