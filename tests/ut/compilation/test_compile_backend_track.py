@@ -258,13 +258,26 @@ class TestSetupInductorTrackEnvs(TrackTestBase):
         with self.assertRaises(ValueError):
             NPUPlatform._setup_inductor_track_envs(vllm_config, ascend_config)
 
-    def test_track_on_rejects_breakable_cudagraph(self):
+    def test_track_on_warns_when_breakable_wins(self):
+        """Debt 1 (ledger 13): upstream semantics — breakable wins, the track is
+        inert (mode already forced to NONE upstream). No raise; a dedicated
+        warning carries the escape hatch ("set it to 0": unsetting would
+        re-trigger the nine-architecture auto-inject). The hook continues, so
+        the env carriers are still written."""
+        import logging
+
         from vllm_ascend.platform import NPUPlatform
 
         os.environ["VLLM_USE_BREAKABLE_CUDAGRAPH"] = "1"
         vllm_config, ascend_config = self._make_stubs()
-        with self.assertRaises(ValueError):
+        with self.assertLogs("vllm", level=logging.WARNING) as logs:
             NPUPlatform._setup_inductor_track_envs(vllm_config, ascend_config)
+        joined = "\n".join(logs.output)
+        self.assertIn("VLLM_USE_BREAKABLE_CUDAGRAPH wins", joined)
+        self.assertIn("inductor track is inert", joined)
+        self.assertIn("Set VLLM_USE_BREAKABLE_CUDAGRAPH=0", joined)
+        # the hook ran to completion (no raise): env carriers still written
+        self.assertEqual(os.environ.get("TORCHINDUCTOR_NPU_BACKEND"), "triton_experimental")
 
     def test_user_autotune_1_is_kept(self):
         from vllm_ascend.platform import NPUPlatform
@@ -632,3 +645,62 @@ class TestSetupCompileBackendGuard(TrackTestBase):
         self.assertEqual(vllm_config.compilation_config.mode, CompilationMode.VLLM_COMPILE)
         self.assertFalse(vllm_config.additional_config["ascend_compilation_config"]["enable_npugraph_ex"])
         self.assertFalse(vllm_config.additional_config["ascend_compilation_config"]["enable_static_kernel"])
+
+
+class TestBreakableArchAutoInject(TrackTestBase):
+    """Debt 1 (ledger 13): with the opt-in pin removed, upstream's architecture
+    auto-inject (vllm.py:1211-1234) must fire again on Ascend — a VllmConfig
+    for one of the nine breakable architectures with the env var absent gets
+    it auto-set to "1" and compilation mode forced to NONE (vllm.py:1236-1241)."""
+
+    def test_pin_removed_at_import_time(self):
+        """The stage1 pin (setdefault "0" at vllm_ascend.platform import) is
+        gone: importing the platform must not create the env var."""
+        import vllm_ascend.platform  # noqa: F401
+
+        self.assertNotIn("VLLM_USE_BREAKABLE_CUDAGRAPH", os.environ)
+
+    def test_nine_arch_config_auto_enables_breakable(self):
+        import torch
+
+        # SimpleNamespace stands in for ModelConfig: __post_init__ reads a
+        # handful of attributes/methods around the inject branch; a real
+        # ModelConfig would need an HF checkpoint. VllmConfig is a pydantic
+        # dataclass (replace() would validate), so follow the established
+        # pattern: construct bare, assign model_config directly, then re-run
+        # __post_init__ — the inject branch lives there. Track OFF (no
+        # additional_config).
+        model_config = SimpleNamespace(
+            architectures=["MiniMaxM3SparseForCausalLM"],
+            architecture="MiniMaxM3SparseForCausalLM",
+            # skip try_verify_and_update_config's registry/HF resolution
+            config_updated=True,
+            enforce_eager=False,
+            dtype=torch.bfloat16,
+            pooler_config=None,
+            is_encoder_decoder=False,
+            hf_config=SimpleNamespace(hidden_size=1024, is_encoder_decoder=False),
+            get_hidden_size=lambda: 1024,
+            verify_with_parallel_config=lambda *a, **k: None,
+            verify_dual_chunk_attention_config=lambda *a, **k: None,
+            is_moe=False,
+            enable_return_routed_experts=False,
+            quantization=None,
+            multimodal_config=None,
+            attention_chunk_size=None,
+        )
+        with patch(
+            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
+        ), patch(
+            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
+            return_value=None,
+        ), patch.object(
+            VllmConfig, "_set_cudagraph_sizes", lambda self: None
+        ), patch.object(
+            VllmConfig, "_set_max_num_scheduled_tokens", lambda self: None
+        ):
+            vllm_config = VllmConfig()
+            vllm_config.model_config = model_config
+            vllm_config.__post_init__()
+        self.assertEqual(os.environ.get("VLLM_USE_BREAKABLE_CUDAGRAPH"), "1")
+        self.assertEqual(vllm_config.compilation_config.mode, CompilationMode.NONE)

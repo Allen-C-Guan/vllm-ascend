@@ -64,15 +64,6 @@ else:
     VllmConfig = None
     FlexibleArgumentParser = None
 
-# Keep Breakable CUDAGraph opt-in on Ascend. Upstream may auto-enable it
-# for selected architectures when the environment variable is absent.
-value = os.environ.setdefault("VLLM_USE_BREAKABLE_CUDAGRAPH", "0")
-logger.info_once(
-    "Breakable CUDAGraph on Ascend is opt-in; using VLLM_USE_BREAKABLE_CUDAGRAPH=%s.",
-    value,
-    scope="process",
-)
-
 _CUSTOM_OP_REGISTERED = False
 # Delete after the driver is released; temporarily hard-coded to 4
 MAX_REDUCED_CAPTURE_SIZES = 4
@@ -452,14 +443,19 @@ class NPUPlatform(Platform):
         if getattr(ascend_compilation_config, "compile_backend", "auto") != "inductor":
             return
 
-        # VLLM_USE_BREAKABLE_CUDAGRAPH (user-set or auto-enabled for some model
-        # architectures, vllm.py:1212-1230) forces compilation mode to NONE and
-        # would silently disable the track.
+        # Debt 1 (ledger 13): upstream semantics — breakable wins over the
+        # compile request. vllm.py:1236-1241 already forced mode to NONE and
+        # warned before any of our hooks run, so the track is inert by the
+        # time we get here; do not fail fast. Escape hatch is "set it to 0":
+        # unsetting would re-trigger the architecture auto-inject
+        # (vllm.py:1211-1234) for the nine breakable architectures and
+        # silently re-disable the track for them.
         if envs_vllm.VLLM_USE_BREAKABLE_CUDAGRAPH:
-            raise ValueError(
-                "ascend_compilation_config.compile_backend='inductor' is incompatible with "
-                "VLLM_USE_BREAKABLE_CUDAGRAPH=1 (it forces compilation mode to NONE; the "
-                "variable may have been auto-enabled for this model architecture)."
+            logger.warning_once(
+                "VLLM_USE_BREAKABLE_CUDAGRAPH wins over compile_backend='inductor': "
+                "compilation mode forced to NONE and the inductor track is inert. "
+                "Set VLLM_USE_BREAKABLE_CUDAGRAPH=0 to use the track.",
+                scope="process",
             )
 
         compilation_config = vllm_config.compilation_config
