@@ -114,6 +114,54 @@ def test_w8a8_fusion_match_table_recorded():
     print(f"W8A8_DYNAMIC match_table (recorded): {table}")
 
 
+@wait_until_npu_memory_free(max_wait_seconds=600)
+def test_w8a8_dynamic_fusion_match_table():
+    """Stage4 W2 (D1/D2) acceptance: the dynamic W8A8 form now fuses (asserted).
+
+    Root cause fixed in stage4: with enable_custom_op() the dynamic-quant graph
+    norm node is ``_C_ascend.npu_add_rms_norm_bias(x, residual, weight, None,
+    eps)`` — the registry lacked a bias=None dynamic variant (the WithBias
+    pattern needs a tensor 4th arg), so rmsnorm_quant_fusion_pass stayed at 0
+    (T0b-1R). The added AddRMSNormDynamicQuantPatternWithNoneBias (+View)
+    variants must turn the 0.6B cold-compile match count above zero. The
+    pattern-level mechanics are covered CPU-side by
+    tests/ut/compilation/test_norm_quant_fusion_w2_patterns.py; this e2e case
+    proves the hit on the real 0.6B graph (D2: match_table rmsnorm_quant>0).
+    """
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    _force_cold_compile()
+
+    from vllm import LLM, SamplingParams
+    from vllm.compilation.passes.vllm_inductor_pass import VllmPatternMatcherPass
+
+    llm = LLM(
+        model=_W8A8_MODEL,
+        quantization="ascend",
+        dtype="bfloat16",
+        max_model_len=1024,
+        gpu_memory_utilization=0.55,
+        compilation_config=_TRACK_CG,
+        additional_config={
+            "ascend_compilation_config": {
+                "compile_backend": "inductor",
+                # 方案 A (U-approved): the dynamic fusion variants are opt-in —
+                # default-off keeps greedy output token-identical to eager.
+                "fuse_norm_quant_dynamic": True,
+            },
+            "weight_nz_mode": 0,
+        },
+    )
+    outs = llm.generate(PROMPTS_SHORT, SamplingParams(max_tokens=8, temperature=0.0))
+    for out in outs:
+        assert out.outputs[0].text.strip(), "empty generation"
+
+    table = dict(VllmPatternMatcherPass.match_table)
+    assert table.get("rmsnorm_quant_fusion_pass", 0) > 0, (
+        f"stage4 W2 (D1): the bias=None dynamic variant produced no matches on "
+        f"the W8A8_DYNAMIC 0.6B: match_table={table}"
+    )
+
+
 _8B_W8A8 = os.environ.get(
     "S3_W8A8_8B_MODEL",
     "/home/inductor-benchmark/huggingface/modelscope/Qwen3-8B-W8A8",

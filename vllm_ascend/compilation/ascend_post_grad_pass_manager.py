@@ -186,7 +186,9 @@ class AscendPostGradPassManager(PostGradPassManager):
         if acc.fuse_norm_quant and not is_310p():
             from .passes.norm_quant_fusion_pass import AddRMSNormQuantFusionPass
 
-            self.passes.append(AddRMSNormQuantFusionPass(config))
+            self.passes.append(
+                AddRMSNormQuantFusionPass(config, dynamic_quant_fusion=acc.fuse_norm_quant_dynamic)
+            )
 
         if acc.fuse_qknorm_rope:
             from .passes.qknorm_rope_fusion_pass import QKNormRopeFusionPass
