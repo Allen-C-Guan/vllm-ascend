@@ -28,3 +28,4 @@ Explore the design documents covering patch architecture, CPU binding, model run
 - **[Optimization and Tuning](performance_and_debug/optimization_and_tuning.md)** — Performance optimization
 - **[Service Profiling Guide](performance_and_debug/service_profiling_guide.md)** — Service profiling
 - **[msprobe Guide](performance_and_debug/msprobe_guide.md)** — Debugging with msprobe
+- **[Inductor Track Breakpoint Map](performance_and_debug/inductor_track_breakpoint_map.md)** — Debugging the inductor compile-backend track
