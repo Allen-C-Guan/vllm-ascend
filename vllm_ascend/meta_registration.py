@@ -72,6 +72,28 @@ def sgmv_expand_meta(
     return y_out
 
 
+def bgmv_shrink_meta(x: torch.Tensor, weight: torch.Tensor, indices: torch.Tensor, y: torch.Tensor, scale: float):
+    # bgmv_shrink mutates ``y`` in place (schema ``-> ()``), so unlike the
+    # expand ops there is no output tensor to materialize for meta/fake
+    # propagation; registering a no-op Meta kernel is enough to make the op
+    # callable under FakeTensorMode (e.g. torch.compile fake propagation).
+    return
+
+
+def sgmv_shrink_meta(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    lora_indices: torch.Tensor,
+    seq_len: torch.Tensor,
+    y: torch.Tensor,
+    scale: float,
+):
+    # sgmv_shrink mutates ``y`` in place (schema ``-> ()``); see bgmv_shrink_meta.
+    return
+
+
 if get_current_hardware_profile().supports(HardwareCapability.BGMV_SGMV_META_REGISTRATION):
     register_meta_if_necessary("_C_ascend", "bgmv_expand", bgmv_expand_meta)
     register_meta_if_necessary("_C_ascend", "sgmv_expand", sgmv_expand_meta)
+    register_meta_if_necessary("_C_ascend", "bgmv_shrink", bgmv_shrink_meta)
+    register_meta_if_necessary("_C_ascend", "sgmv_shrink", sgmv_shrink_meta)
