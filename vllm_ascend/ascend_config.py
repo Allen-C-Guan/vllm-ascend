@@ -74,6 +74,16 @@ class AscendCompilationConfig:
     fuse_norm_quant: bool = True
     fuse_qknorm_rope: bool = True
     fuse_muls_add: bool = True
+    # stage4 W2 (U-approved 方案 A): opt-in sub-flag of fuse_norm_quant for the
+    # DYNAMIC W8A8 fusion variants (bias=None direct + view-swallowing). The
+    # fused aclnn kernel and the eager two-op chain are both valid quantizers
+    # but not token-identical (the fused one is closer to fp64 truth; 55 sites
+    # flip near-tie argmax, docs/ut-bugfix/
+    # test_w8a8_inductor_track_matches_eager_report.md), so the default keeps
+    # today's outputs bit-identical on both tracks and the variants are
+    # accepted behind this explicit flag (default-off also honors the original
+    # hold-design 3.2 "first version off, enable experiment-driven" promise).
+    fuse_norm_quant_dynamic: bool = False
     # "auto" keeps the existing npugraph_ex / fusion_pass inference unchanged
     # (resolved enable_npugraph_ex True/False selects between them).
     # "fusion_pass" / "npugraph_ex" pin one of the two legacy tracks.
