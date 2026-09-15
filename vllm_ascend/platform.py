@@ -92,6 +92,21 @@ _MINIMAX_M3_ARCHITECTURES = frozenset(
 )
 _V2_EPLB_CONFIG_FIELDS = frozenset({"load_collection_phase", "stair_config"})
 _V2_STAIR_CONFIG_FIELDS = frozenset(StairConfig.__dataclass_fields__)
+# Extra FX-graph split points appended after
+# CompilationConfig.set_splitting_ops_for_v1() (piecewise cudagraph modes).
+# These are vllm-ascend local opaque attention ops, and vllm::mla_forward is a
+# REQUIRED split point for DeepSeek-V2-family MLA: the PluggableLayer OOT class
+# swap routes every MultiHeadLatentAttentionWrapper instance (upstream
+# DeepSeek-V2 included) through it (vllm_ascend/attention/ops/mla.py), so do
+# NOT prune these as "DSV4-only" — that claim was falsified by stage-4
+# verification V-MLA-A2 (removing the extend would break DSV2 piecewise
+# capture). Extending a copy keeps per-engine lists independent under spawn.
+NPU_INDUCTOR_EXTRA_SPLITTING_OPS = (
+    "vllm::mla_forward",
+    "vllm::dsa_forward",
+    "vllm::minimax_m3_fused_sparse_forward",
+    "vllm::glm5next_kda_forward_with_output",
+)
 # PassConfig fusion flags pinned off by the inductor compile-backend track.
 # Upstream PostGradPassManager.configure() references fusion pass classes that
 # are only imported on CUDA/XPU-like platforms; on NPU they are not imported
@@ -1930,14 +1945,7 @@ def _setup_compile_backend(
         )
         # NOTE: Theoretically, we should also add this in the attention ops; the
         # class attribute may still hold the pre-modification value after spawn.
-        compilation_config.splitting_ops.extend(
-            [
-                "vllm::mla_forward",
-                "vllm::dsa_forward",
-                "vllm::minimax_m3_fused_sparse_forward",
-                "vllm::glm5next_kda_forward_with_output",
-            ]
-        )
+        compilation_config.splitting_ops.extend(NPU_INDUCTOR_EXTRA_SPLITTING_OPS)
         # TODO(2026/7/15): Delete the reduced gear after the new driver is released.
         if get_current_hardware_profile().supports(HardwareCapability.REDUCED_CUDAGRAPH_CAPTURE_SIZES):
             _prune_reduced_capture_sizes(vllm_config)
