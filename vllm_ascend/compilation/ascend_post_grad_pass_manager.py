@@ -183,6 +183,28 @@ class AscendPostGradPassManager(PostGradPassManager):
                 "(fuse flags unreadable)."
             )
             return
+        # Stage-4 batch2 #9 (R7): on the inductor track, triton_experimental
+        # installs its npu-op decompositions (e.g. npu_rms_norm -> primitive
+        # soup) at FIRST COMPILE — i.e. AFTER this configure-time pattern
+        # registration. Patterns traced before the table install kept their
+        # op anchors and could never match the AOT-decomposed graphs
+        # (qknorm_rope was structurally 0-hit on the track; CPU-level leg3
+        # single-variable proof in stage4/_notes/t0_probe). Install the table
+        # BEFORE tracing the patterns so both sides see the same (decomposed)
+        # graph form. Process-level idempotent; anchors on
+        # _C_ascend.npu_add_rms_norm(_bias) are NOT decomposed by the table,
+        # so the norm-quant patterns (W2, e2e-verified 55 hits) are
+        # unaffected.
+        try:
+            from torch_npu._inductor.decomposition import _register_triton_experimental_decompositions
+
+            _register_triton_experimental_decompositions()
+        except Exception:
+            logger.debug(
+                "triton_experimental decompositions unavailable at fusion-pass "
+                "injection; patterns keep their op-anchor form."
+            )
+
         if acc.fuse_norm_quant and not is_310p():
             from .passes.norm_quant_fusion_pass import AddRMSNormQuantFusionPass
 
