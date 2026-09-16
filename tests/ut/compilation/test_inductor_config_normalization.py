@@ -214,3 +214,27 @@ class TestHookIntegration(NormalizationTestBase):
         cc = vllm_config.compilation_config
         self.assertFalse(cc.inductor_compile_config["combo_kernels"])
         self.assertFalse(cc.inductor_compile_config["benchmark_combo_kernel"])
+
+
+class TestSingleSizeOverrideWarning(TestBase):
+    """Stage-4 W3 leftover: single-size compile_sizes silently overwrites
+    user-set max_autotune / coordinate_descent_tuning (V-W3-extra①)."""
+
+    def _cfg(self, sizes, cfg):
+        from types import SimpleNamespace
+
+        from vllm_ascend.platform import _warn_single_size_key_override
+
+        return _warn_single_size_key_override(
+            SimpleNamespace(compile_sizes=sizes, inductor_compile_config=cfg)
+        )
+
+    def test_warns_on_collision(self):
+        with self.assertLogs("vllm", level=logging.WARNING) as cm:
+            self._cfg([1, 8], {"max_autotune": True})
+        self.assertTrue(any("unconditionally overwrite" in m for m in cm.output))
+
+    def test_silent_without_sizes_or_overlap(self):
+        with self.assertNoLogs("vllm", level=logging.WARNING):
+            self._cfg(None, {"max_autotune": True})
+            self._cfg([1], {"size_asserts": True})

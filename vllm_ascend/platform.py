@@ -544,6 +544,7 @@ class NPUPlatform(Platform):
         # VLLM_ASCEND_STRICT_INDUCTOR_CONFIG=1), split_reductions fails fast,
         # track-pinned-off keys are overridden False with a warning.
         _normalize_inductor_config(compilation_config.inductor_compile_config)
+        _warn_single_size_key_override(compilation_config)
 
         # Stage-4 W4 dump one-liner (02 design §四-1): a non-empty
         # -cc.debug_dump_path turns on TORCH_COMPILE_DEBUG so Inductor drops
@@ -1392,6 +1393,31 @@ _TRACK_PINNED_OFF_INDUCTOR_KEYS = (
 # Combo kernels have no triton_experimental adaptation and can fail hard;
 # the early hook already pins them off (see _apply_inductor_track_defaults).
 _TRACK_COMBO_INDUCTOR_KEYS = ("combo_kernels", "benchmark_combo_kernel")
+
+
+def _warn_single_size_key_override(compilation_config) -> None:
+    """Stage-4 W3 leftover: surface the silent single-size key overwrite.
+
+    vLLM's ``compile_sizes`` single-size path (``set_inductor_config``,
+    injected per-piece after both platform hooks) unconditionally overwrites
+    these keys in the per-piece config, silently discarding user-set values
+    (stage-4 verification V-W3-extra①).
+    """
+    sizes = getattr(compilation_config, "compile_sizes", None)
+    if not sizes:
+        return
+    user_cfg = getattr(compilation_config, "inductor_compile_config", None) or {}
+    overridden = sorted({"max_autotune", "coordinate_descent_tuning"} & set(user_cfg))
+    if overridden:
+        logger.warning(
+            "Inductor compile-backend track: compile_sizes=%s is set, so vLLM's "
+            "single-size injection (set_inductor_config, per piece) will "
+            "unconditionally overwrite the user-set inductor_compile_config "
+            "keys [%s] at compile time; the injected values come from vLLM's "
+            "VLLM_ENABLE_INDUCTOR_* env vars.",
+            sizes,
+            ", ".join(overridden),
+        )
 
 
 def _normalize_inductor_config(config: dict | None) -> dict | None:
