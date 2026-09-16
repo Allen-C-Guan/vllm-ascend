@@ -227,8 +227,9 @@ def test_w8a8_8b_inductor_track_default_cg_gate():
     """
     import glob
 
-    from tests.e2e.conftest import VllmRunner
     from vllm import SamplingParams
+
+    from tests.e2e.conftest import VllmRunner
 
     kwargs = dict(
         model_name=_8B_W8A8,
