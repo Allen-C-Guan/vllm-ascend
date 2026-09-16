@@ -17,7 +17,11 @@
 #
 import torch
 from torch._inductor.pattern_matcher import PatternMatcherPass, PatternPrettyPrinter
-from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
+from vllm.compilation.passes.inductor_pass import InductorPass
+from vllm.compilation.passes.vllm_inductor_pass import (
+    VllmInductorPass,
+    VllmPatternMatcherPass,
+)
 from vllm.config import VllmConfig, get_layers_from_vllm_config
 from vllm.config.compilation import Range
 from vllm.logger import logger
@@ -192,6 +196,9 @@ class QKNormRopeFusionPass(VllmInductorPass):
     def __init__(self, vllm_config: VllmConfig):
         super().__init__(vllm_config)
         self.pattern_match_passes: PatternMatcherPass = PatternMatcherPass(pass_name="qknorm_rope_fusion_pass")
+        # uuid factors (stage3 03 R3-5): pattern shapes come from the discovered
+        # attention layer, so head/num_heads/num_kv_heads must fold into the key.
+        self._uuid_factors: dict = {"dtype": str(vllm_config.model_config.dtype)}
 
         dtype = vllm_config.model_config.dtype
         if dtype not in (torch.bfloat16,):
@@ -204,6 +211,13 @@ class QKNormRopeFusionPass(VllmInductorPass):
             logger.debug("QKNorm and Rope fusion enabled, but no Attention layers were discovered.")
             return
         layer = next(iter(attn_layers.values()))
+        self._uuid_factors.update(
+            {
+                "head_size": str(layer.head_size),
+                "num_heads": str(layer.num_heads),
+                "num_kv_heads": str(layer.num_kv_heads),
+            }
+        )
         for epsilon in [1e-6, 1e-5]:
             if layer.head_size != 128:
                 logger.debug("QKNorm and Rope fusion not enabled: head_dim %d is not equal of 128", layer.head_size)
@@ -224,9 +238,13 @@ class QKNormRopeFusionPass(VllmInductorPass):
                 eps=epsilon,
             ).register(self.pattern_match_passes)
 
+    def uuid(self) -> str:
+        return InductorPass.hash_dict({"src": super().uuid(), **self._uuid_factors})
+
     def __call__(self, graph: torch.fx.Graph):
         self.begin()
         self.matched_count = self.pattern_match_passes.apply(graph)
+        VllmPatternMatcherPass.match_table[self.pattern_match_passes.pass_name] += self.matched_count
         logger.debug("Fused %s QKNorm and Rope patterns", self.matched_count)
         logger.debug("Patterns registered for replacement:")
         pattern_idx = 0

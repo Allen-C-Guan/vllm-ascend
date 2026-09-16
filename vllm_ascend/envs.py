@@ -71,6 +71,11 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
+    # Whether unknown keys in compilation_config.inductor_compile_config raise
+    # instead of warn + drop on the inductor compile-backend track.
+    # "1": restore the upstream strict semantics (compile_fx apply_options
+    # raises on unknown keys). "0" (default): warn and drop the key.
+    "VLLM_ASCEND_STRICT_INDUCTOR_CONFIG": lambda: os.getenv("VLLM_ASCEND_STRICT_INDUCTOR_CONFIG", "0") == "1",
 }
 
 # end-env-vars-definition

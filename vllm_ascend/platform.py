@@ -64,15 +64,6 @@ else:
     VllmConfig = None
     FlexibleArgumentParser = None
 
-# Keep Breakable CUDAGraph opt-in on Ascend. Upstream may auto-enable it
-# for selected architectures when the environment variable is absent.
-value = os.environ.setdefault("VLLM_USE_BREAKABLE_CUDAGRAPH", "0")
-logger.info_once(
-    "Breakable CUDAGraph on Ascend is opt-in; using VLLM_USE_BREAKABLE_CUDAGRAPH=%s.",
-    value,
-    scope="process",
-)
-
 _CUSTOM_OP_REGISTERED = False
 # Delete after the driver is released; temporarily hard-coded to 4
 MAX_REDUCED_CAPTURE_SIZES = 4
@@ -81,6 +72,37 @@ _MINIMAX_M3_ARCHITECTURES = frozenset(
         "MiniMaxM3SparseForCausalLM",
         "MiniMaxM3SparseForConditionalGeneration",
     }
+)
+# Extra FX-graph split points appended after
+# CompilationConfig.set_splitting_ops_for_v1() (piecewise cudagraph modes).
+# Both are vllm-ascend local opaque attention ops, and vllm::mla_forward is a
+# REQUIRED split point for DeepSeek-V2-family MLA: the PluggableLayer OOT class
+# swap routes every MultiHeadLatentAttentionWrapper instance (upstream
+# DeepSeek-V2 included) through it (vllm_ascend/attention/ops/mla.py), so do
+# NOT prune these as "DSV4-only" — that claim was falsified by stage-4
+# verification V-MLA-A2 (removing the extend would break DSV2 piecewise
+# capture). Extending a copy keeps per-engine lists independent under spawn.
+NPU_INDUCTOR_EXTRA_SPLITTING_OPS = (
+    "vllm::mla_forward",
+    "vllm::dsa_forward",
+)
+# PassConfig fusion flags pinned off by the inductor compile-backend track.
+# Upstream PostGradPassManager.configure() references fusion pass classes that
+# are only imported on CUDA/XPU-like platforms; on NPU they are not imported
+# and a True flag would raise NameError.
+_INDUCTOR_TRACK_PASS_FLAGS_OFF = (
+    "fuse_norm_quant",
+    "fuse_act_quant",
+    "fuse_attn_quant",
+    "enable_sp",
+    "fuse_gemm_comms",
+    "fuse_allreduce_rms",
+    "enable_qk_norm_rope_fusion",
+    "fuse_rope_kvcache_cat_mla",
+    "fuse_act_padding",
+    "fuse_mla_dual_rms_norm",
+    "fuse_rope_kvcache",
+    "fuse_qk_norm_rope_kvcache",
 )
 
 
@@ -111,7 +133,13 @@ class NPUPlatform(Platform):
         Inductor config key for the PassManager custom pass, for example 'post_grad_custom_post_pass'.
         It is a parameter of inductor_config used to register custom passes.
         Currently, we only use Inductor's 'pattern matcher' functionality, so we define our own pass_key.
+
+        The inductor compile-backend track falls back to the upstream default
+        key: "graph_fusion_manager" is not a valid torch._inductor config key
+        and would make compile_fx's config.patch raise AttributeError.
         """
+        if _inductor_track_active():
+            return "post_grad_custom_post_pass"
         return COMPILATION_PASS_KEY
 
     @classmethod
@@ -176,7 +204,15 @@ class NPUPlatform(Platform):
         """
         Get the pass manager class for this platform.
         It will be registered as a custom pass under the current_platform.pass_key.
+
+        The inductor compile-backend track uses an upstream PostGradPassManager
+        subclass that replaces FixFunctionalizationPass (it references the
+        CUDA-only torch.ops._C.rotary_embedding and raises AttributeError on
+        NPU; GraphFusionPassManager targets the AscendCompiler fusion-pass
+        track and is not a CustomGraphPass subclass).
         """
+        if _inductor_track_active():
+            return "vllm_ascend.compilation.ascend_post_grad_pass_manager.AscendPostGradPassManager"
         return "vllm_ascend.compilation.graph_fusion_pass_manager.GraphFusionPassManager"
 
     @classmethod
@@ -325,6 +361,208 @@ class NPUPlatform(Platform):
         default_max_cg_capture_size = _get_default_max_cudagraph_capture_size(vllm_config)
         if default_max_cg_capture_size is not None:
             vllm_config.compilation_config.max_cudagraph_capture_size = default_max_cg_capture_size
+
+        cls._apply_inductor_track_defaults(vllm_config)
+
+    @classmethod
+    def _apply_inductor_track_defaults(cls, vllm_config: VllmConfig) -> None:
+        """Apply the inductor compile-backend track's derived config defaults.
+
+        Runs inside apply_config_platform_defaults, i.e. BEFORE vLLM core
+        derives mode / custom_ops base mode / ir_enable_torch_wrap from
+        compilation_config.backend. Rewriting backend to "inductor" here lets
+        core derive the same defaults as CUDA (custom_ops "none", mode
+        VLLM_COMPILE), while NPU-unsupported defaults are pinned off.
+        """
+        from vllm.config.compilation import CUDAGraphMode
+        from vllm.config.vllm import OptimizationLevel
+
+        device_config = getattr(vllm_config, "device_config", None)
+        if device_config is not None and getattr(device_config, "device_type", cls.device_type) != cls.device_type:
+            return
+        if not _inductor_track_enabled(vllm_config):
+            return
+
+        # Only the enforce_eager fail-fast needs model_config; the derived
+        # defaults below do not. A bare config (model_config=None, e.g. in
+        # tests) still gets the track applied.
+        model_config = getattr(vllm_config, "model_config", None)
+        if model_config is not None and model_config.enforce_eager:
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' is incompatible with "
+                "enforce_eager=True: enforce_eager disables all compilation. "
+                "Drop enforce_eager to use the inductor compile-backend track."
+            )
+        if vllm_config.optimization_level == OptimizationLevel.O0:
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' requires optimization "
+                "level -O1 or higher (-O0 disables all compilation)."
+            )
+
+        compilation_config = vllm_config.compilation_config
+        logger.info(
+            "Inductor compile-backend track enabled: backend=inductor, "
+            "cudagraph_mode=%s, compile_fx via InductorAdaptor, torch inductor "
+            "npu_backend=triton_experimental.",
+            compilation_config.cudagraph_mode or "unset (default deferred to the -O preset)",
+        )
+        compilation_config.backend = "inductor"
+        # The track no longer pins a cudagraph_mode default (debt 2, ledger 13):
+        # leave None for the -O presets (vllm.py:1299 fills None fields only),
+        # giving O1 -> PIECEWISE, O2/O3 -> FULL_AND_PIECEWISE — upstream
+        # semantics. Invariant: nothing may read cudagraph_mode between this
+        # early hook (vllm.py:1270) and the presets (vllm.py:1299).
+        if compilation_config.cudagraph_mode in (
+            CUDAGraphMode.FULL,
+            CUDAGraphMode.FULL_AND_PIECEWISE,
+            CUDAGraphMode.FULL_DECODE_ONLY,
+        ):
+            # Explicit full-graph values are honored as-is (since stage3):
+            # FULL_AND_PIECEWISE flows through the PIECEWISE branch of
+            # _setup_compile_backend and gets an outer FULL ACLGraphWrapper on
+            # the decode leg; FULL / FULL_DECODE_ONLY take the upstream
+            # single-graph shape (splitting_ops=[]).
+            logger.info(
+                "Inductor track: explicit cudagraph_mode=%s accepted (full-graph capture leg, stage3).",
+                compilation_config.cudagraph_mode,
+            )
+        # Not verified on NPU; core would derive True once backend == "inductor".
+        compilation_config.ir_enable_torch_wrap = False
+        for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
+            setattr(compilation_config.pass_config, flag, False)
+        # combo kernels have no triton_experimental adaptation and can fail hard.
+        compilation_config.inductor_compile_config.update({"combo_kernels": False, "benchmark_combo_kernel": False})
+
+    @classmethod
+    def _setup_inductor_track_envs(cls, vllm_config: VllmConfig, ascend_config) -> None:
+        """Propagate inductor compile-backend track state through env vars.
+
+        Two facts make env vars the only reliable carrier:
+        1. torch_npu's inductor backend loader only reads
+           TORCHINDUCTOR_NPU_BACKEND (vLLM compiles pieces via compile_fx, not
+           the torch.compile wrapper, so a npu_backend option never applies).
+        2. pass_key / get_pass_manager_cls are read live in the (spawned)
+           worker process, where VllmConfig is unpickled without re-running
+           the platform config hooks.
+
+        Runs in check_and_update_config, during engine construction and before
+        EngineCore workers are spawned, so children inherit the values.
+        """
+        ascend_compilation_config = getattr(ascend_config, "ascend_compilation_config", None)
+        if getattr(ascend_compilation_config, "compile_backend", "auto") != "inductor":
+            return
+
+        # Debt 1 (ledger 13): upstream semantics — breakable wins over the
+        # compile request. vllm.py:1236-1241 already forced mode to NONE and
+        # warned before any of our hooks run, so the track is inert by the
+        # time we get here; do not fail fast. Escape hatch is "set it to 0":
+        # unsetting would re-trigger the architecture auto-inject
+        # (vllm.py:1211-1234) for the nine breakable architectures and
+        # silently re-disable the track for them.
+        if envs_vllm.VLLM_USE_BREAKABLE_CUDAGRAPH:
+            logger.warning_once(
+                "VLLM_USE_BREAKABLE_CUDAGRAPH wins over compile_backend='inductor': "
+                "compilation mode forced to NONE and the inductor track is inert. "
+                "Set VLLM_USE_BREAKABLE_CUDAGRAPH=0 to use the track.",
+                scope="process",
+            )
+
+        # Stage-4 #66 guards: explicitly-set controls that silently change what
+        # the track compiles. warning_once, never raise (precedent: the
+        # breakable warning above). Raw os.environ reads: the AOT value must
+        # be observed before the setdefault below pins the default off.
+        if os.environ.get("VLLM_USE_AOT_COMPILE") == "1":
+            logger.warning_once(
+                "VLLM_USE_AOT_COMPILE=1 is explicitly set on the inductor "
+                "compile-backend track: it runs, but re-loading the saved AOT "
+                "artifact on a later start is unverified (stage-4 probe "
+                "T0b-6). Consider removing it.",
+                scope="process",
+            )
+        if os.environ.get("TORCH_COMPILE_DISABLE") == "1":
+            logger.warning_once(
+                "TORCH_COMPILE_DISABLE=1 detected: the inductor track was "
+                "already silently disabled by upstream (compilation mode "
+                "forced to NONE, vllm/config/vllm.py), so the track has no "
+                "effect on this engine.",
+                scope="process",
+            )
+
+        compilation_config = vllm_config.compilation_config
+        if compilation_config.backend != "inductor":
+            logger.warning(
+                "Inductor compile-backend track: backend=%s inconsistent with the track, correcting to 'inductor'.",
+                compilation_config.backend,
+            )
+            compilation_config.backend = "inductor"
+
+        if os.environ.get("TORCHINDUCTOR_NPU_BACKEND", "triton_experimental") != "triton_experimental":
+            logger.warning(
+                "Inductor compile-backend track: keeping user TORCHINDUCTOR_NPU_BACKEND=%s "
+                "(expected 'triton_experimental').",
+                os.environ["TORCHINDUCTOR_NPU_BACKEND"],
+            )
+        else:
+            os.environ["TORCHINDUCTOR_NPU_BACKEND"] = "triton_experimental"
+
+        # Force InductorAdaptor (compile_fx): standalone_compile has no
+        # torch_npu adaptation. Fail fast on explicit user overrides.
+        if os.environ.get("VLLM_USE_STANDALONE_COMPILE") == "1":
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' does not support "
+                "VLLM_USE_STANDALONE_COMPILE=1: standalone_compile is not adapted to "
+                "torch_npu and fails at runtime. Unset it to use the track."
+            )
+        os.environ.setdefault("VLLM_USE_STANDALONE_COMPILE", "0")
+        # torch>=2.10/2.12 default AOT / MEGA-AOT on through computed defaults
+        # (vllm/envs.py use_aot_compile / use_mega_aot_artifact); MEGA requires
+        # the standalone path (make_compiler assertion), so pin both off.
+        os.environ.setdefault("VLLM_USE_AOT_COMPILE", "0")
+        if os.environ.get("VLLM_USE_MEGA_AOT_ARTIFACT") == "1":
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' does not support "
+                "VLLM_USE_MEGA_AOT_ARTIFACT=1: MEGA AOT artifacts require the standalone "
+                "compile path (make_compiler assertion). Unset it to use the track."
+            )
+        os.environ.setdefault("VLLM_USE_MEGA_AOT_ARTIFACT", "0")
+        # vLLM injects max_autotune / coordinate_descent_tuning=True for
+        # single-size compile ranges; triton_experimental pins them off.
+        for name in (
+            "VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE",
+            "VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING",
+        ):
+            if os.environ.get(name) == "1":
+                logger.info(
+                    "Inductor compile-backend track: keeping user %s=1 "
+                    "(overrides the triton_experimental default of off).",
+                    name,
+                )
+            os.environ.setdefault(name, "0")
+
+        # Stage-4 W3 (02 design §三, D3/D4): normalize -cc.inductor_compile_config
+        # on the track — unknown keys warn + drop (strict escape hatch:
+        # VLLM_ASCEND_STRICT_INDUCTOR_CONFIG=1), split_reductions fails fast,
+        # track-pinned-off keys are overridden False with a warning.
+        _normalize_inductor_config(compilation_config.inductor_compile_config)
+
+        # Stage-4 W4 dump one-liner (02 design §四-1): a non-empty
+        # -cc.debug_dump_path turns on TORCH_COMPILE_DEBUG so Inductor drops
+        # output_code artifacts. Cache-dir envs are deliberately NOT touched:
+        # upstream initialize_cache hard-sets TORCHINDUCTOR_CACHE_DIR at first
+        # compile (stage-4 verification V-W4-A4), so a setdefault here would
+        # be dead weight. VLLM_DEBUG_DUMP_PATH is likewise never set: it would
+        # mount depyf, which is incompatible with torch 2.13 (stage-4 probe
+        # T0b-7: depyf patched_load_by_key_path vs codecache set_sys_modules).
+        if compilation_config.debug_dump_path:
+            os.environ.setdefault("TORCH_COMPILE_DEBUG", "1")
+            logger.info(
+                "Inductor compile-backend track: compilation_config.debug_dump_path "
+                "is set; TORCH_COMPILE_DEBUG=%s. Inductor dump artifacts (output_code "
+                "etc.) land under the vLLM compile cache 'inductor_cache/' directory; "
+                "TORCHINDUCTOR_CACHE_DIR is hard-redirected by upstream and is not "
+                "modified here.",
+                os.environ.get("TORCH_COMPILE_DEBUG"),
+            )
 
     def num_compute_units(cls, device_id: int = 0) -> int:
         """Return the number of Cube Cores on the NPU device.
@@ -475,6 +713,11 @@ class NPUPlatform(Platform):
         ascend_config = init_ascend_config(vllm_config)
         _check_ascend_config(vllm_config, ascend_config)
 
+        # 5.5 Set up env carriers for the inductor compile-backend track.
+        # Must run before step 6/7 (mode adjustments) and before workers are
+        # spawned, so children inherit the env values.
+        cls._setup_inductor_track_envs(vllm_config, ascend_config)
+
         # 6.Update compilation / cudagraph modes (ascend_config -> vllm_config).
         _update_compilation_modes(vllm_config, ascend_config)
 
@@ -494,6 +737,15 @@ class NPUPlatform(Platform):
 
         # 10.Set pytorch NPU allocator env (vllm_config)
         _set_pytorch_npu_alloc_env(vllm_config)
+
+        if _inductor_track_enabled(vllm_config):
+            # Final value AFTER steps 6/7 may have adjusted it (e.g. xlite or
+            # encoder-decoder downgrades); the early hook runs before the -O
+            # presets, so it cannot log the effective mode (debt 2).
+            logger.info(
+                "Inductor compile-backend track active: cudagraph_mode=%s (final).",
+                vllm_config.compilation_config.cudagraph_mode,
+            )
 
     @classmethod
     def set_additional_forward_context(
@@ -1069,6 +1321,141 @@ def _validate_kv_load_failure_policy(vllm_config: VllmConfig) -> None:
             raise AssertionError("Hybrid models do not support recompute mode kv load failure policy now.")
 
 
+def _inductor_track_backend(vllm_config: VllmConfig) -> str | None:
+    """The raw compile_backend value from additional_config, or None.
+
+    Usable from both platform config hooks: the early hook runs before
+    init_ascend_config parses the typed AscendConfig.
+    """
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    ascend_compilation_config = additional_config.get("ascend_compilation_config") or {}
+    return ascend_compilation_config.get("compile_backend")
+
+
+def _inductor_track_enabled(vllm_config: VllmConfig) -> bool:
+    """Whether the inductor compile-backend track is requested.
+
+    Reads the raw additional_config dict: this is usable from
+    apply_config_platform_defaults, which runs before init_ascend_config
+    parses the typed AscendConfig.
+    """
+    return _inductor_track_backend(vllm_config) == "inductor"
+
+
+def _inductor_track_active() -> bool:
+    """Whether the CURRENT engine's Ascend compilation config selects the
+    inductor track.
+
+    Reads the AscendConfig singleton, which init_ascend_config refreshes at
+    each engine construction (check_and_update_config step 5 and
+    worker init, both before model load). This lets the platform hooks that
+    receive no vllm_config (pass_key / get_pass_manager_cls) observe
+    per-engine state — no process-global env carrier that could leak across
+    engines and need manual cleanup.
+    """
+    try:
+        ascend_config = get_ascend_config()
+    except RuntimeError:
+        # No engine constructed yet in this process (e.g. direct platform
+        # use in tests): legacy behavior.
+        return False
+    return ascend_config.ascend_compilation_config.compile_backend == "inductor"
+
+
+def _legal_inductor_config_keys() -> set[str]:
+    """Keys accepted in ``-cc.inductor_compile_config`` on the inductor track.
+
+    The authoritative set is whatever the live torch inductor config exposes:
+    ``get_config_copy()`` returns the flat key list (dotted sub-config keys
+    like ``cpp.dynamic_threads`` included). Fetched dynamically — never
+    hardcoded — so the whitelist follows the installed torch. ``npu_backend``
+    is unioned in unconditionally: torch_npu's patch makes it a legal
+    per-compile key, but only once torch_npu._inductor has activated, so the
+    key's presence in ``get_config_copy()`` is timing-sensitive (stage-4
+    verification V-W3-extra(2)); the union keeps the set correct at both
+    patch timings.
+    """
+    import torch._inductor.config as torch_inductor_config
+
+    return set(torch_inductor_config.get_config_copy()) | {"npu_backend"}
+
+
+# Keys the triton_experimental activation pins off process-globally: TE
+# codegen never consumes them, but a per-compile value from
+# -cc.inductor_compile_config would shadow the global inside compile_fx's
+# config.patch and reach the compiler (stage-4 verification V-W3-A5/A6).
+_TRACK_PINNED_OFF_INDUCTOR_KEYS = (
+    "shape_padding",
+    "layout_optimization",
+    "coordinate_descent_tuning",
+)
+# Combo kernels have no triton_experimental adaptation and can fail hard;
+# the early hook already pins them off (see _apply_inductor_track_defaults).
+_TRACK_COMBO_INDUCTOR_KEYS = ("combo_kernels", "benchmark_combo_kernel")
+
+
+def _normalize_inductor_config(config: dict | None) -> dict | None:
+    """Normalize ``-cc.inductor_compile_config`` for the inductor track (in place).
+
+    Stage-4 W3 governance (02 design §三, decisions D3/D4), a cpu.py-style
+    platform-hook dict rewrite running in the late hook. Three passes:
+
+    1. Unknown keys — warn and drop. Upstream compile_fx apply_options would
+       raise AttributeError on them much later (first piece compile); the
+       track surfaces them at engine construction instead. Escape hatch:
+       VLLM_ASCEND_STRICT_INDUCTOR_CONFIG=1 restores the strict raise.
+    2. Correctness-dangerous key — split_reductions truthy fails fast: the
+       reduction decomposition has no triton_experimental adaptation and
+       changes numerics (fail-fast precedent: the standalone raise in
+       _setup_inductor_track_envs).
+    3. Track-pinned-off keys truthy — warn and override False. Defense in
+       depth on top of the TE activation-time pin plus notification.
+    """
+    import vllm_ascend.envs as envs_ascend
+
+    if not config:
+        return config
+    legal_keys = _legal_inductor_config_keys()
+
+    unknown_keys = sorted(key for key in config if key not in legal_keys)
+    if unknown_keys:
+        if envs_ascend.VLLM_ASCEND_STRICT_INDUCTOR_CONFIG:
+            raise ValueError(
+                "ascend_compilation_config.compile_backend='inductor' rejects "
+                "unknown inductor_compile_config keys (strict mode, "
+                f"VLLM_ASCEND_STRICT_INDUCTOR_CONFIG=1): {', '.join(unknown_keys)}. "
+                "Remove them, or unset the env var to downgrade to warn + drop."
+            )
+        logger.warning(
+            "Inductor compile-backend track: dropping unknown inductor_compile_config "
+            "keys (upstream compile_fx would raise AttributeError on them at first "
+            "compile): %s. Set VLLM_ASCEND_STRICT_INDUCTOR_CONFIG=1 "
+            "to restore the strict upstream behavior.",
+            ", ".join(unknown_keys),
+        )
+        for key in unknown_keys:
+            del config[key]
+
+    if config.get("split_reductions"):
+        raise ValueError(
+            "ascend_compilation_config.compile_backend='inductor' does not support "
+            "inductor_compile_config split_reductions=True: reduction splitting has no "
+            "triton_experimental adaptation and changes numerics. Remove the key to "
+            "use the track."
+        )
+
+    for key in _TRACK_PINNED_OFF_INDUCTOR_KEYS + _TRACK_COMBO_INDUCTOR_KEYS:
+        if config.get(key):
+            logger.warning(
+                "Inductor compile-backend track: overriding inductor_compile_config "
+                "%s=True to False — triton_experimental pins it off (no "
+                "adaptation); the track default wins.",
+                key,
+            )
+            config[key] = False
+    return config
+
+
 def _update_compilation_modes(vllm_config: VllmConfig, ascend_config) -> None:
     """Update compilation / cudagraph modes.
 
@@ -1211,7 +1598,10 @@ def _setup_compile_backend(
     compilation_config.oot_compiler = compile_backend
     compilation_config.use_inductor = False
     if compilation_config.cudagraph_mode == CUDAGraphMode.NONE:
-        compilation_config.mode = CompilationMode.NONE
+        # The inductor compile-backend track decouples compilation from graph
+        # capture: keep VLLM_COMPILE so per-piece compilation still happens.
+        if not _inductor_track_enabled(vllm_config):
+            compilation_config.mode = CompilationMode.NONE
         additional_config["ascend_compilation_config"]["enable_npugraph_ex"] = False
         additional_config["ascend_compilation_config"]["enable_static_kernel"] = False
     elif compilation_config.cudagraph_mode.requires_piecewise_compilation():
@@ -1229,12 +1619,7 @@ def _setup_compile_backend(
         )
         # NOTE: Theoretically, we should also add this in the attention ops; the
         # class attribute may still hold the pre-modification value after spawn.
-        compilation_config.splitting_ops.extend(
-            [
-                "vllm::mla_forward",
-                "vllm::dsa_forward",
-            ]
-        )
+        compilation_config.splitting_ops.extend(NPU_INDUCTOR_EXTRA_SPLITTING_OPS)
         # TODO(2026/7/15): Delete the reduced gear after the new driver is released.
         if get_current_hardware_profile().supports(HardwareCapability.REDUCED_CUDAGRAPH_CAPTURE_SIZES):
             _prune_reduced_capture_sizes(vllm_config)
@@ -1258,6 +1643,18 @@ def _setup_compile_backend(
             "need ASCEND_LAUNCH_BLOCKING for debugging, consider other methods — "
             "for example, check the plog files (default: $HOME/ascend/log/debug) "
             "for more information about runtime errors."
+        )
+
+    # The explicit npugraph_ex track only makes sense with full-graph capture
+    # modes (see graph_mode.md); cg=NONE would silently compile nothing.
+    if (
+        _inductor_track_backend(vllm_config) == "npugraph_ex"
+        and compilation_config.cudagraph_mode == CUDAGraphMode.NONE
+    ):
+        raise ValueError(
+            "ascend_compilation_config.compile_backend='npugraph_ex' requires a "
+            "full-graph cudagraph_mode (FULL / FULL_DECODE_ONLY / FULL_AND_PIECEWISE), "
+            f"got cudagraph_mode={compilation_config.cudagraph_mode}."
         )
 
 
