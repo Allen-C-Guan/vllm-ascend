@@ -167,7 +167,14 @@ def _rope_forward_oot_impl_fake(
         raise NotImplementedError(f"Unsupported RoPE output dtype: {out_dtype}")
     if out_dtype is not None:
         return torch.empty_like(query, dtype=out_dtype), torch.empty_like(key, dtype=out_dtype)
-    return query, key
+    # Stage-4 R16: the real op returns freshly-allocated contiguous tensors
+    # (rope_forward_triton starts with q.contiguous()); the previous
+    # `return query, key` alias lie made inductor's functionalization record
+    # "output aliases input", so the compiled wrapper reinterpreted the real
+    # output with the aliased qkv-view strides -> setStorage out-of-bounds on
+    # the first downstream view (eagle3 draft head, attention_v1.py
+    # reshape_and_cache). Match the real op: fresh, contiguous, same shape.
+    return torch.empty_like(query), torch.empty_like(key)
 
 
 def _muls_add_impl_fake(
