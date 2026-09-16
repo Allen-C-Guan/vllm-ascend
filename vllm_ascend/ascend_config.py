@@ -1354,6 +1354,7 @@ class SparseKVOffloadConfig:
 
 
 _ASCEND_CONFIG: AscendConfig | None = None
+
 # Identity key for the singleton cache: the vllm_config that initialized it.
 # Private module state (not a field on AscendConfig) — replaces the former
 # ``getattr(_ASCEND_CONFIG, "vllm_config", None) is vllm_config`` check, now
@@ -1399,6 +1400,7 @@ def init_ascend_config(vllm_config):
         and _INIT_VLLM_CONFIG is vllm_config
     ):
         return _ASCEND_CONFIG
+
 
     # Pre-construct sub-configs that need precedence resolution or vllm_config.
     sched = SchedulerConfig.from_additional_config(additional_config)
