@@ -52,7 +52,7 @@ import glob
 import os
 
 import pytest
-from vllm.config.compilation import CUDAGraphMode, CompilationConfig
+from vllm.config.compilation import CompilationConfig, CUDAGraphMode
 
 from tests.e2e.conftest import VllmRunner, wait_until_npu_memory_free
 
