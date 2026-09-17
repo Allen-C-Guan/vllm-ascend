@@ -18,7 +18,7 @@ Acceptance (stage3/04 §T3-5):
 import os
 
 import pytest
-from vllm.config.compilation import CUDAGraphMode, CompilationConfig
+from vllm.config.compilation import CompilationConfig, CUDAGraphMode
 
 from tests.e2e.conftest import wait_until_npu_memory_free
 from tests.e2e.pull_request.utils import PROMPTS_SHORT, compare_logprobs
@@ -206,3 +206,100 @@ def test_w8a8_static_fusion_match_table():
     assert table.get("rmsnorm_quant_fusion_pass", 0) > 0, (
         f"fuse_norm_quant produced no matches on the static W8A8 8B: match_table={table}"
     )
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(_8B_W8A8),
+    reason=f"static W8A8 8B weights not found at {_8B_W8A8}",
+)
+@wait_until_npu_memory_free(max_wait_seconds=600)
+def test_w8a8_8b_inductor_track_default_cg_gate():
+    """Stage4 final-audit A2 (02 §W1.4 / M-E step 3): 8B static W8A8 default-cg gate.
+
+    Probe T0b-8 proved the default journey (cudagraph_mode unset -> deferred to
+    the -O preset -> FULL_AND_PIECEWISE final) runs and generates on the 8B
+    static-quantized shape; this case freezes that evidence as a repo gate:
+    non-empty generation, final cudagraph_mode FULL_AND_PIECEWISE, and the
+    triton_experimental artifact marker. Guards the rf1 default (O2 preset)
+    on quantized weights (rf1 ledger gap "F&P default x W8A8-8B unverified").
+    The eager token-identity baseline is a SEPARATE strict-xfail case (see its
+    reason) per the MoE W8A8 precedent.
+    """
+    import glob
+
+    from vllm import SamplingParams
+
+    from tests.e2e.conftest import VllmRunner
+
+    kwargs = dict(
+        model_name=_8B_W8A8,
+        quantization="ascend",
+        dtype="bfloat16",
+        max_model_len=1024,
+        max_num_seqs=4,
+        gpu_memory_utilization=0.85,
+        additional_config={
+            "ascend_compilation_config": {"compile_backend": "inductor"},
+            "weight_nz_mode": 0,
+        },
+    )
+
+    greedy = SamplingParams(max_tokens=8, temperature=0.0)
+    with VllmRunner(**kwargs) as runner:
+        final_cg = runner.model.llm_engine.vllm_config.compilation_config.cudagraph_mode
+        outs = runner.model.generate(PROMPTS_SHORT, greedy)
+    for prompt, out in zip(PROMPTS_SHORT, outs):
+        assert out.outputs[0].text.strip(), f"empty track generation for prompt {prompt!r}"
+
+    assert getattr(final_cg, "name", str(final_cg)) == "FULL_AND_PIECEWISE", (
+        f"final cudagraph_mode expected FULL_AND_PIECEWISE (rf1 default journey), got {final_cg}"
+    )
+
+    cache_root = os.environ.get("VLLM_CACHE_ROOT", os.path.expanduser("~/.cache/vllm"))
+    hits = []
+    for path in glob.glob(
+        os.path.join(cache_root, "**", "inductor_cache", "**", "*.py"), recursive=True
+    ):
+        with open(path, encoding="utf-8") as f:
+            if "npu_triton_heuristics" in f.read():
+                hits.append(path)
+    assert hits, (
+        f"no npu_triton_heuristics marker under {cache_root}/**/inductor_cache/ "
+        "(track compiled without triton_experimental?)"
+    )
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(_8B_W8A8),
+    reason=f"static W8A8 8B weights not found at {_8B_W8A8}",
+)
+@wait_until_npu_memory_free(max_wait_seconds=600)
+@pytest.mark.xfail(
+    reason="8B static W8A8 default-cg track-vs-eager token identity is a near-tie "
+    "argmax class divergence (final-audit A2 runs 2026-09-16: strict greedy flips "
+    "the very first prefill token on prompt 0 'Hello, my name is' — eager 8515 vs "
+    "track 29405, both plausible name-start continuations; compare_logprobs equally "
+    "rejects because its criterion requires the same argmax token) — quantized "
+    "weights + fused norm-quant static kernels accumulate sub-ULP differences vs "
+    "the eager chain; same family as the MoE 30B W8A8 near-tie set (TODO-VA-8, "
+    "logprob-gap adjudication in stage-5). Gate criteria live in "
+    "test_w8a8_8b_inductor_track_default_cg_gate; this case stays as the "
+    "recorded parity baseline and flips to a hard gate once the logprob gap "
+    "is measured acceptable.",
+    strict=True,
+)
+def test_w8a8_8b_inductor_track_default_cg_matches_eager():
+    """8B static W8A8 default-cg eager parity (recorded strict-xfail, MoE precedent)."""
+    kwargs = dict(
+        model_name=_8B_W8A8,
+        quantization="ascend",
+        dtype="bfloat16",
+        max_model_len=1024,
+        max_num_seqs=4,
+        gpu_memory_utilization=0.85,
+        additional_config={
+            "ascend_compilation_config": {"compile_backend": "inductor"},
+            "weight_nz_mode": 0,
+        },
+    )
+    compare_logprobs(runner_kwargs=kwargs, prompts=PROMPTS_SHORT)

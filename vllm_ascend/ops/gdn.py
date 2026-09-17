@@ -18,6 +18,7 @@
 import torch
 import torch_npu
 from einops import rearrange
+from vllm.logger import logger
 from vllm.distributed import get_pcp_group
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
@@ -66,19 +67,36 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
         # Invoking npu_chunk_gated_delta_rule will result in errors.
         # Remove this conditional block after the new A5 CANN package is released.
         try:
-            # Minimal smoke call matching the op constraints (Dk == Dv == 128,
-            # Nv % Nk == 0). B=1, one short sequence.
+            # Smoke call matching the op constraints (Dk == Dv == 128,
+            # Nv % Nk == 0). B=1, one sequence.
+            #
+            # Stage-4 batch2 F-A (torch-npu bug folder bug1 / R21-3): the old
+            # all-zeros smoke never exercised the op's numeric path — the
+            # fused kernel corrupts NORMAL-magnitude inputs on affected builds
+            # (absmax ~9e7 at T=64, >=25% NaN at T>=256; zeros stay clean), so
+            # GDN-family models silently degraded to garbage output on every
+            # track. Smoke with realistic magnitudes (randn q/k/v, sigmoid
+            # beta, negative decay g) at a corruption-triggering length and
+            # verify finiteness; any corruption disables the fused path (FLA
+            # fallback). Minimal repro: torch-npu bug/bug1_repro.py.
             device = torch.npu.current_device()
             dk = dv = 128
-            nk, nv, seqlen = 1, 1, 64
-            q = torch.zeros((seqlen, nk, dk), dtype=torch.bfloat16, device=device)
-            k = torch.zeros((seqlen, nk, dk), dtype=torch.bfloat16, device=device)
-            v = torch.zeros((seqlen, nv, dv), dtype=torch.bfloat16, device=device)
-            beta = torch.full((seqlen, nv), 0.5, dtype=torch.bfloat16, device=device)
-            g = torch.full((seqlen, nv), -0.1, dtype=torch.float32, device=device)
+            nk, nv, seqlen = 1, 1, 256
+            gen = torch.Generator(device="cpu").manual_seed(0)
+
+            def _randn(*shape, dtype):
+                return torch.randn(*shape, generator=gen, dtype=torch.float32).to(device=device, dtype=dtype)
+
+            q = _randn(seqlen, nk, dk, torch.bfloat16)
+            k = _randn(seqlen, nk, dk, torch.bfloat16)
+            v = _randn(seqlen, nv, dv, torch.bfloat16)
+            beta = torch.sigmoid(_randn(seqlen, nv, torch.float32)).to(torch.bfloat16)
+            g = -(
+                torch.rand((seqlen, nv), generator=gen, dtype=torch.float32) + 0.01
+            ).to(device=device)
             initial_state = torch.zeros((1, nv, dv, dk), dtype=torch.bfloat16, device=device)
             actual_seq_lengths = torch.tensor([seqlen], dtype=torch.int32, device=device)
-            torch_npu.npu_chunk_gated_delta_rule(
+            o, final_state = torch_npu.npu_chunk_gated_delta_rule(
                 q,
                 k,
                 v,
@@ -89,6 +107,18 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
                 g=g,
             )
             torch.npu.synchronize()
+            if not (torch.isfinite(o).all() and torch.isfinite(final_state).all() and o.abs().max() < 1e3):
+                cls._fused_chunk_available = False
+                logger.warning(
+                    "npu_chunk_gated_delta_rule failed the numeric smoke check "
+                    "(out finite=%s absmax=%s, final_state finite=%s); falling "
+                    "back to the unfused FLA path. See stage design/stage4/"
+                    "torch-npu bug/bug1.",
+                    bool(torch.isfinite(o).all()),
+                    o.abs().max().item(),
+                    bool(torch.isfinite(final_state).all()),
+                )
+                return False
             cls._fused_chunk_available = True
         except Exception:
             cls._fused_chunk_available = False
