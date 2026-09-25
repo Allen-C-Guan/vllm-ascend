@@ -414,8 +414,26 @@ class NPUPlatform(Platform):
                 "Inductor track: explicit cudagraph_mode=%s accepted (full-graph capture leg, stage3).",
                 compilation_config.cudagraph_mode,
             )
-        # Not verified on NPU; core would derive True once backend == "inductor".
-        compilation_config.ir_enable_torch_wrap = False
+        # Stage5 F6 (unpin): ir_enable_torch_wrap is no longer forced False —
+        # vLLM core derives True for the inductor track (vllm/config/vllm.py
+        # "ir_enable_torch_wrap" preset fills the None field right after this
+        # early hook). M0/M5 A-B on 0.6B measured no significant difference;
+        # keeping the upstream-derived value restores the CUDA-same default
+        # surface (red line 2: via the upstream front door, not a side pin).
+        # Stage5 F1/U5 ruling: explicit user -cc.custom_ops is fully respected
+        # (upstream mechanism unchanged); ONLY when the user left it unset do
+        # we fill the track's own default ['all'] here — before the core base
+        # mode derivation — so an unset config lands on the measured optimum
+        # (M2 matrix: none regresses 8B/W8A8 by 4-12%). The single divergence
+        # from CUDA is the unset-default value; everything else is upstream.
+        if not compilation_config.custom_ops:
+            compilation_config.custom_ops = ["all"]
+            logger.info(
+                "Inductor compile-backend track: custom_ops unset — filling "
+                "the track default ['all'] (user-explicit -cc.custom_ops is "
+                "respected verbatim; M2 matrix measured none regressing "
+                "8B/W8A8 decode 4-12%%)."
+            )
         for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
             setattr(compilation_config.pass_config, flag, False)
         # combo kernels have no triton_experimental adaptation and can fail hard.
@@ -545,6 +563,36 @@ class NPUPlatform(Platform):
                 "modified here.",
                 os.environ.get("TORCH_COMPILE_DEBUG"),
             )
+
+    @classmethod
+    def _apply_auto_custom_ops(cls, vllm_config: VllmConfig) -> None:
+        """Activate all custom ops on AUTO_ENABLE_CUSTOM_OPS profiles.
+
+        Stage5 F1: on the *active* inductor compile-backend track, keep the
+        upstream-derived base ('none' — vllm/config/vllm.py derives it from
+        backend == "inductor" before this late hook runs) and any explicit
+        user -cc.custom_ops value; the ['all'] overwrite stays bit-identical
+        for the legacy track and for inert (mode=NONE) engines.
+        """
+        if not get_current_hardware_profile().supports(
+            HardwareCapability.AUTO_ENABLE_CUSTOM_OPS
+        ):
+            return
+        from vllm.config import CompilationMode
+
+        cc = vllm_config.compilation_config
+        if cc.backend == "inductor" and cc.mode not in (
+            CompilationMode.NONE,
+            None,
+        ):
+            logger.info(
+                "Inductor compile-backend track: keeping upstream-derived "
+                "custom_ops=%s (user-explicit values are respected; the "
+                "AUTO_ENABLE_CUSTOM_OPS overwrite only applies off the track).",
+                cc.custom_ops,
+            )
+        else:
+            cc.custom_ops = ["all"]
 
     def num_compute_units(cls, device_id: int = 0) -> int:
         """Return the number of Cube Cores on the NPU device.
@@ -1676,8 +1724,7 @@ def _setup_worker_and_scheduler(
     refresh_block_size(vllm_config)
 
     # Automatically activate all custom ops on profiles using the standard path.
-    if get_current_hardware_profile().supports(HardwareCapability.AUTO_ENABLE_CUSTOM_OPS):
-        vllm_config.compilation_config.custom_ops = ["all"]
+    NPUPlatform._apply_auto_custom_ops(vllm_config)
 
     # Select specialized scheduler class
     scheduler_config = ascend_config.scheduler_config

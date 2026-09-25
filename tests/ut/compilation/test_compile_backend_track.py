@@ -192,11 +192,15 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
         vllm_config = self._make_vllm_config(track=True)
         # Early-hook timing: -O presets have not filled cudagraph_mode yet.
         vllm_config.compilation_config.cudagraph_mode = None
+        # Stage5 F6 (unpin): the early hook must not touch ir_enable_torch_wrap
+        # (a None value left in place lets the -O preset derive True for the
+        # inductor track right after the hook — CUDA-same default surface).
+        vllm_config.compilation_config.ir_enable_torch_wrap = None
         NPUPlatform._apply_inductor_track_defaults(vllm_config)
         cc = vllm_config.compilation_config
         self.assertEqual(cc.backend, "inductor")
         self.assertIsNone(cc.cudagraph_mode)
-        self.assertFalse(cc.ir_enable_torch_wrap)
+        self.assertIsNone(cc.ir_enable_torch_wrap)
         self.assertFalse(cc.inductor_compile_config["combo_kernels"])
         self.assertFalse(cc.inductor_compile_config["benchmark_combo_kernel"])
         for flag in _INDUCTOR_TRACK_PASS_FLAGS_OFF:
@@ -204,9 +208,9 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
 
     def test_track_on_core_derives_custom_ops_none(self):
         """Full-chain: with the front door set at VllmConfig construction
-        time, vLLM core derives the CUDA-same defaults from
-        compilation_config.backend natively (the hook only pins off the
-        NPU-unsupported ones)."""
+        time, the unset custom_ops lands on the track default ['all']
+        (stage5 F1/U5 ruling — measured optimum; the upstream mechanism and
+        any explicit user value are untouched)."""
         with patch(
             "vllm_ascend.platform.NPUPlatform.check_and_update_config"
         ), patch(
@@ -220,11 +224,30 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
             self.skipTest("current_platform did not resolve to npu")
         cc = vllm_config.compilation_config
         self.assertEqual(cc.backend, "inductor")
-        self.assertIn("none", cc.custom_ops)
-        self.assertNotIn("all", cc.custom_ops)
+        self.assertEqual(cc.custom_ops, ["all"])
         self.assertEqual(cc.mode, CompilationMode.VLLM_COMPILE)
         # Debt 2: default -O2 journey — the presets now own the track default.
         self.assertEqual(cc.cudagraph_mode, CUDAGraphMode.FULL_AND_PIECEWISE)
+
+    def test_track_on_user_explicit_custom_ops_survives(self):
+        """U5: an explicit -cc.custom_ops is respected verbatim through the
+        full construction chain (no overwrite, no default fill)."""
+        with patch(
+            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
+        ), patch(
+            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
+            return_value=None,
+        ):
+            vllm_config = VllmConfig(
+                compilation_config=CompilationConfig(
+                    backend="inductor", custom_ops=["none"]
+                ),
+            )
+        if vllm_config.device_config.device_type != "npu":
+            self.skipTest("current_platform did not resolve to npu")
+        cc = vllm_config.compilation_config
+        self.assertIn("none", cc.custom_ops)
+        self.assertNotIn("all", cc.custom_ops)
 
     def test_track_on_with_enforce_eager_is_inert_upstream_semantics(self):
         """User ruling 2026-09-19 (born-upstream lens): enforce_eager with
@@ -641,3 +664,60 @@ class TestBreakableArchAutoInject(TrackTestBase):
             vllm_config.__post_init__()
         self.assertEqual(os.environ.get("VLLM_USE_BREAKABLE_CUDAGRAPH"), "1")
         self.assertEqual(vllm_config.compilation_config.mode, CompilationMode.NONE)
+
+
+class TestAutoCustomOpsOverwrite(TrackTestBase):
+    """Stage5 F1: the AUTO_ENABLE_CUSTOM_OPS ['all'] overwrite is
+    track-aware. On the active inductor compile-backend track the
+    upstream-derived base ('none', vllm/config/vllm.py) and any explicit
+    user -cc.custom_ops value are kept; off the track (legacy backend or
+    inert mode=NONE engine) the overwrite stays bit-identical to the
+    pre-stage5 behavior."""
+
+    def _apply(self, vllm_config, supports=True):
+        from vllm_ascend.platform import NPUPlatform
+
+        profile = SimpleNamespace(
+            supports=lambda cap: supports
+        )
+        with patch(
+            "vllm_ascend.platform.get_current_hardware_profile",
+            return_value=profile,
+        ):
+            NPUPlatform._apply_auto_custom_ops(vllm_config)
+        return vllm_config.compilation_config
+
+    def test_track_on_keeps_upstream_derived_none(self):
+        vllm_config = self._make_vllm_config(track=True)
+        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
+        vllm_config.compilation_config.custom_ops = ["none"]
+        cc = self._apply(vllm_config)
+        self.assertEqual(cc.custom_ops, ["none"])
+
+    def test_track_on_respects_explicit_user_all(self):
+        vllm_config = self._make_vllm_config(track=True)
+        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
+        vllm_config.compilation_config.custom_ops = ["all"]
+        cc = self._apply(vllm_config)
+        self.assertEqual(cc.custom_ops, ["all"])
+
+    def test_track_off_overwrites_all(self):
+        vllm_config = self._make_vllm_config(track=False)
+        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
+        vllm_config.compilation_config.custom_ops = []
+        cc = self._apply(vllm_config)
+        self.assertEqual(cc.custom_ops, ["all"])
+
+    def test_track_on_but_inert_mode_none_overwrites_all(self):
+        vllm_config = self._make_vllm_config(track=True)
+        vllm_config.compilation_config.mode = CompilationMode.NONE
+        vllm_config.compilation_config.custom_ops = []
+        cc = self._apply(vllm_config)
+        self.assertEqual(cc.custom_ops, ["all"])
+
+    def test_non_supporting_profile_is_noop(self):
+        vllm_config = self._make_vllm_config(track=False)
+        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
+        vllm_config.compilation_config.custom_ops = []
+        cc = self._apply(vllm_config, supports=False)
+        self.assertEqual(cc.custom_ops, [])
