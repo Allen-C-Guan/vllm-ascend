@@ -21,16 +21,25 @@ from types import ModuleType
 
 _triton_available = importlib.util.find_spec("triton") is not None
 
-if "triton.experimental" not in sys.modules:
+# triton-ascend >= 3.6 ships a real triton.experimental.gluon package. The
+# stubs below were built for triton-ascend 3.2.x (no gluon there) and would
+# shadow the real package, breaking every triton kernel compile. Skip them
+# when the real package exists.
+if "triton.experimental" not in sys.modules and (
+    not _triton_available
+    or importlib.util.find_spec("triton.experimental") is None
+):
     _experimental = ModuleType("triton.experimental")
     _experimental.__path__ = []
     sys.modules["triton.experimental"] = _experimental
-for _gluon_stub in (
-    "triton.experimental.gluon",
-    "triton.experimental.gluon.language",
-):
-    if _gluon_stub not in sys.modules:
-        sys.modules[_gluon_stub] = ModuleType(_gluon_stub)
+
+if importlib.util.find_spec("triton.experimental.gluon") is None:
+    for _gluon_stub in (
+        "triton.experimental.gluon",
+        "triton.experimental.gluon.language",
+    ):
+        if _gluon_stub not in sys.modules:
+            sys.modules[_gluon_stub] = ModuleType(_gluon_stub)
 
 # main2main compat: `_aggregate` was added to triton.language.core in
 # vllm main post-0.26.0. Stub it here so vllm.triton_utils can import it
