@@ -150,7 +150,7 @@ bool CheckKvCacheQuantModeValidity(int64_t weightQuantMode, int64_t kvCacheQuant
             supportedStr.pop_back();
         }
         OP_LOGE_FOR_INVALID_VALUE_WITH_REASON("MlaPrologV3", "kvCacheQuantMode",(std::to_string(kvCacheQuantMode)).c_str(),("When weightQuantMode==" + std::to_string(weightQuantMode) +
-                                                  ").c_str(), must be within " + supportedStr);
+                                                  ", must be within " + supportedStr).c_str());
         return false;
     }
     return true;

@@ -197,8 +197,8 @@ ge::graphStatus MlaPrologTilingCheck::CheckDims() const
 {
     OP_CHECK_IF(
         baseShapeInfo_.bSize > MAX_B_SIZE,
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "B",(std::to_string(baseShapeInfo_.bSize)).c_str(),("B size should not be greater than " + std::to_string(MAX_B_SIZE)),
-        return ge::GRAPH_FAILED).c_str());
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "B",(std::to_string(baseShapeInfo_.bSize)).c_str(),("B size should not be greater than " + std::to_string(MAX_B_SIZE)).c_str()),
+        return ge::GRAPH_FAILED);
     const std::set<uint32_t> supportedHeSize{1024U, 2048U, 3072U, 4096U, 5120U, 6144U, 7168U, 7680U, 8192U};
     OP_CHECK_IF(supportedHeSize.find(baseShapeInfo_.heSize) == supportedHeSize.end(),
                 OP_LOGE_FOR_INVALID_VALUE(context_.opName, "He",(std::to_string(baseShapeInfo_.heSize)).c_str(),
@@ -210,21 +210,21 @@ ge::graphStatus MlaPrologTilingCheck::CheckDims() const
                                           "N size should be within [1, 128]"),
                 return ge::GRAPH_FAILED);
     OP_CHECK_IF(baseShapeInfo_.hckvSize != HCKV_SIZE,
-                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Hckv",(std::to_string(baseShapeInfo_.hckvSize)).c_str(),(std::to_string(HCKV_SIZE)),
-                return ge::GRAPH_FAILED).c_str());
+                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Hckv",(std::to_string(baseShapeInfo_.hckvSize)).c_str(),(std::to_string(HCKV_SIZE)).c_str()),
+                return ge::GRAPH_FAILED);
     OP_CHECK_IF(baseShapeInfo_.drSize != DR_SIZE,
-                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Dr",(std::to_string(baseShapeInfo_.drSize)).c_str(),(std::to_string(DR_SIZE)),
-                return ge::GRAPH_FAILED).c_str());
+                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Dr",(std::to_string(baseShapeInfo_.drSize)).c_str(),(std::to_string(DR_SIZE)).c_str()),
+                return ge::GRAPH_FAILED);
     OP_CHECK_IF(baseShapeInfo_.nkvSize != NKV_SIZE,
-                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Nkv",(std::to_string(baseShapeInfo_.nkvSize)).c_str(),(std::to_string(NKV_SIZE)),
-                return ge::GRAPH_FAILED).c_str());
+                OP_LOGE_FOR_INVALID_VALUE(context_.opName, "Nkv",(std::to_string(baseShapeInfo_.nkvSize)).c_str(),(std::to_string(NKV_SIZE)).c_str()),
+                return ge::GRAPH_FAILED);
     if (scenarioInfo_.cacheMode_ != CACHE_MODE::BSND && scenarioInfo_.cacheMode_ != CACHE_MODE::TND) {
         OP_CHECK_IF(baseShapeInfo_.blockSize < MIN_BLOCK_SIZE || baseShapeInfo_.blockSize > MAX_BLOCK_SIZE ||
                         baseShapeInfo_.blockSize % ALIGN_BLOCK_SIZE != 0,
                     OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(
-                        context_.opName, "blockSize",(std::to_string(baseShapeInfo_.blockSize)).c_str(),("BlockSize must be within [" + std::to_string(MIN_BLOCK_SIZE) + ").c_str(),(" +
-                            std::to_string(MAX_BLOCK_SIZE) + "] and a multiple of " + std::to_string(ALIGN_BLOCK_SIZE)),
-                    return ge::GRAPH_FAILED).c_str());
+                        context_.opName, "blockSize",(std::to_string(baseShapeInfo_.blockSize)).c_str(),("BlockSize must be within [" + std::to_string(MIN_BLOCK_SIZE) + ", " +
+                            std::to_string(MAX_BLOCK_SIZE) + "] and a multiple of " + std::to_string(ALIGN_BLOCK_SIZE)).c_str()),
+                    return ge::GRAPH_FAILED);
     }
     if (CheckHcqSize() != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
@@ -316,11 +316,11 @@ ge::graphStatus MlaPrologTilingCheck::CheckDtileSize() const
             if (*(context_.kvQuantMode) == static_cast<int>(KV_QUANT_MODE::PER_TILE)) {
                 OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(
                     context_.opName, "dtileSize",(std::to_string(baseShapeInfo_.dtileSize)).c_str(),
-                    "when kvQuantMode is PER_TILE,(dtileSize allows only " + std::to_string(supportedDtileSize)).c_str());
+                    ("when kvQuantMode is PER_TILE, dtileSize allows only " + std::to_string(supportedDtileSize)).c_str());
             } else {
                 OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(
                     context_.opName, "dtileSize",(std::to_string(baseShapeInfo_.dtileSize)).c_str(),
-                    "when kvQuantMode is in {NO_QUANT, PER_TENSOR, PER_CHANNEL},(dtileSize allows only " +
+                    ("when kvQuantMode is in {NO_QUANT, PER_TENSOR, PER_CHANNEL}, dtileSize allows only " +
                         std::to_string(supportedDtileSize)).c_str());
             }
             return ge::GRAPH_FAILED;
@@ -964,12 +964,12 @@ void MlaPrologTilingCheck::CheckRepoMode(bool isPertile, ge::graphStatus &isCorr
     std::string name = isPertile ? "COMBINE" : "DIVIDE";
 
     if (*(context_.ckvkrRepoMode) != static_cast<int>(expectedCkvkr)) {
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "ckvkrRepoMode",(std::to_string(*(context_.ckvkrRepoMode))).c_str(),("When " + desc + " quant mode).c_str(),(must be " + name + "(" +
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "ckvkrRepoMode",(std::to_string(*(context_.ckvkrRepoMode))).c_str(),("When " + desc + " quant mode, must be " + name + "(" +
                                                   std::to_string(static_cast<int>(expectedCkvkr)) + ")").c_str());
         isCorrect = ge::GRAPH_FAILED;
     }
     if (*(context_.quantScaleRepoMode) != static_cast<int>(expectedQuantScale)) {
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "quantScaleRepoMode",(std::to_string(*(context_.quantScaleRepoMode))).c_str(),("When " + desc + " quant mode).c_str(),(must be " + name + "(" +
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "quantScaleRepoMode",(std::to_string(*(context_.quantScaleRepoMode))).c_str(),("When " + desc + " quant mode, must be " + name + "(" +
                                                   std::to_string(static_cast<int>(expectedQuantScale)) + ")").c_str());
         isCorrect = ge::GRAPH_FAILED;
     }
@@ -982,7 +982,7 @@ void MlaPrologTilingCheck::CheckQueryQuantMode(bool isPertensor, ge::graphStatus
     std::string name = isPertensor ? "PER_TOKEN_HEAD" : "NO_QUANT";
 
     if (*(context_.queryQuantMode) != static_cast<int>(expected)) {
-        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "queryQuantMode",(std::to_string(*(context_.queryQuantMode))).c_str(),("When " + desc + " quant mode).c_str(),(must be " + name + "(" +
+        OP_LOGE_FOR_INVALID_VALUE_WITH_REASON(context_.opName, "queryQuantMode",(std::to_string(*(context_.queryQuantMode))).c_str(),("When " + desc + " quant mode, must be " + name + "(" +
                                                   std::to_string(static_cast<int>(expected)) + ")").c_str());
         isCorrect = ge::GRAPH_FAILED;
     }
@@ -1175,8 +1175,8 @@ bool MlaPrologTilingCheck::CheckActSeqLen() const
     };
     ge::DataType dtype = context_.actualSeqLen.desc->GetDataType();
     OP_CHECK_IF((ge::DT_INT32 != dtype),
-                OP_LOGE_FOR_INVALID_DTYPE(context_.opName, "actualSeqLen",(TypeUtils::DataTypeToSerialString(dtype)).c_str(),(TypeUtils::DataTypeToSerialString(ge::DT_INT32)),
-                return false).c_str());
+                OP_LOGE_FOR_INVALID_DTYPE(context_.opName, "actualSeqLen",(TypeUtils::DataTypeToSerialString(dtype)).c_str(),(TypeUtils::DataTypeToSerialString(ge::DT_INT32)).c_str()),
+                return false);
     return true;
 }
 
