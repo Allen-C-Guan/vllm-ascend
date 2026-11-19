@@ -264,10 +264,11 @@ class TestAddRMSNormDynamicQuantWithNoneBias(TestBase):
         self.assertGreaterEqual(fusion_pass.matched_count, 1)
         self.assertEqual(len([n for n in gm.graph.nodes if n.target is _FUSED_OP]), 1)
 
-    def test_pass_default_off_keeps_dynamic_chain_unfused(self):
-        """方案 A (U-approved): fuse_norm_quant_dynamic defaults to False, so
-        the pass leaves the dynamic chain untouched — both tracks' outputs stay
-        bit-identical to today (test_w8a8_inductor_track_matches_eager parity).
+    def test_pass_default_off_uses_community_direct_fusion(self):
+        """The community direct NoBias fusion stays enabled by default.
+
+        Only the local view/reshape variant is controlled by
+        fuse_norm_quant_dynamic.
         """
 
         def _ensure_vllm_quantize_op():
@@ -304,5 +305,5 @@ class TestAddRMSNormDynamicQuantWithNoneBias(TestBase):
         gm = _build_graph(_direct_chain(1e-6), _2D)
         fusion_pass(gm.graph)
 
-        self.assertEqual(fusion_pass.matched_count, 0)
+        self.assertEqual(fusion_pass.matched_count, 1)
         self.assertEqual(len([n for n in gm.graph.nodes if n.target is _FUSED_OP]), 0)

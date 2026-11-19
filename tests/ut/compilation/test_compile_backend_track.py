@@ -613,6 +613,7 @@ class TestBreakableArchAutoInject(TrackTestBase):
             enforce_eager=False,
             dtype=torch.bfloat16,
             pooler_config=None,
+            is_submodel_config=False,
             is_encoder_decoder=False,
             hf_config=SimpleNamespace(hidden_size=1024, is_encoder_decoder=False),
             get_hidden_size=lambda: 1024,

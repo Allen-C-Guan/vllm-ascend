@@ -25,8 +25,10 @@ from vllm_ascend.device.hardware_profile import (  # noqa: E402
     get_current_hardware_profile,
 )
 
-if not get_current_hardware_profile().supports(HardwareCapability.BGMV_SGMV_META_REGISTRATION):
-    pytest.skip("BGMV/SGMV direct kernels are not built for this SoC", allow_module_level=True)
+if not get_current_hardware_profile().supports(HardwareCapability.BGMV_SGMV_META_REGISTRATION) or not all(
+    hasattr(torch.ops._C_ascend, op_name) for op_name in ("bgmv_shrink", "sgmv_shrink")
+):
+    pytest.skip("BGMV/SGMV shrink kernels are not built for this SoC", allow_module_level=True)
 
 import vllm_ascend.meta_registration  # noqa: E402, F401  # registers Meta kernels
 
