@@ -306,4 +306,4 @@ class TestAddRMSNormDynamicQuantWithNoneBias(TestBase):
         fusion_pass(gm.graph)
 
         self.assertEqual(fusion_pass.matched_count, 1)
-        self.assertEqual(len([n for n in gm.graph.nodes if n.target is _FUSED_OP]), 0)
+        self.assertEqual(len([n for n in gm.graph.nodes if n.target is _FUSED_OP]), 1)
