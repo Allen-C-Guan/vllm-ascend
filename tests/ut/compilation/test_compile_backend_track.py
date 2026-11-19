@@ -621,6 +621,7 @@ class TestBreakableArchAutoInject(TrackTestBase):
             verify_dual_chunk_attention_config=lambda *a, **k: None,
             is_moe=False,
             return_sampling_mask=False,
+            enable_trace_replay=False,
             enable_return_routed_experts=False,
             quantization=None,
             multimodal_config=None,
