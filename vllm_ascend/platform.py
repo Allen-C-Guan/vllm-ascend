@@ -1997,9 +1997,6 @@ def _setup_compile_backend(
         # NOTE: Theoretically, we should also add this in the attention ops; the
         # class attribute may still hold the pre-modification value after spawn.
         compilation_config.splitting_ops.extend(NPU_INDUCTOR_EXTRA_SPLITTING_OPS)
-        # TODO(2026/7/15): Delete the reduced gear after the new driver is released.
-        if get_current_hardware_profile().supports(HardwareCapability.REDUCED_CUDAGRAPH_CAPTURE_SIZES):
-            _prune_reduced_capture_sizes(vllm_config)
         additional_config["ascend_compilation_config"]["enable_npugraph_ex"] = False
         additional_config["ascend_compilation_config"]["enable_static_kernel"] = False
         additional_config["ascend_compilation_config"]["enable_super_kernel"] = False

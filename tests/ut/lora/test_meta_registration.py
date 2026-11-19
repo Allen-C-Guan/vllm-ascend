@@ -20,6 +20,14 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 # The schemas of ``torch.ops._C_ascend`` only exist once the compiled extension
 # is loaded; CPU runners without it skip this module wholesale.
 pytest.importorskip("vllm_ascend.vllm_ascend_C")
+from vllm_ascend.device.hardware_profile import (  # noqa: E402
+    HardwareCapability,
+    get_current_hardware_profile,
+)
+
+if not get_current_hardware_profile().supports(HardwareCapability.BGMV_SGMV_META_REGISTRATION):
+    pytest.skip("BGMV/SGMV direct kernels are not built for this SoC", allow_module_level=True)
+
 import vllm_ascend.meta_registration  # noqa: E402, F401  # registers Meta kernels
 
 

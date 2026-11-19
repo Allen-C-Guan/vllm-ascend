@@ -211,12 +211,7 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
         time, the unset custom_ops lands on the track default ['all']
         (stage5 F1/U5 ruling — measured optimum; the upstream mechanism and
         any explicit user value are untouched)."""
-        with patch(
-            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-        ), patch(
-            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-            return_value=None,
-        ):
+        with patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"):
             vllm_config = VllmConfig(
                 compilation_config=CompilationConfig(backend="inductor"),
             )
@@ -232,12 +227,7 @@ class TestApplyInductorTrackDefaults(TrackTestBase):
     def test_track_on_user_explicit_custom_ops_survives(self):
         """U5: an explicit -cc.custom_ops is respected verbatim through the
         full construction chain (no overwrite, no default fill)."""
-        with patch(
-            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-        ), patch(
-            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-            return_value=None,
-        ):
+        with patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"):
             vllm_config = VllmConfig(
                 compilation_config=CompilationConfig(
                     backend="inductor", custom_ops=["none"]
@@ -362,12 +352,7 @@ class TestAscendPostGradPassManager(TrackTestBase):
             AscendPostGradPassManager,
         )
 
-        with patch(
-            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-        ), patch(
-            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-            return_value=None,
-        ):
+        with patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"):
             # Build through the track so the early hook pins the fusion flags
             # off; a bare config leaves them on and PostGradPassManager.configure
             # then references CUDA-gated fusion classes (R2 NameError).
@@ -402,12 +387,7 @@ class TestTrackCudagraphMode(TrackTestBase):
         }
         for level, want in expected.items():
             with self.subTest(level=level):
-                with patch(
-                    "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-                ), patch(
-                    "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-                    return_value=None,
-                ):
+                with patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"):
                     vllm_config = VllmConfig(
                         optimization_level=level,
                         compilation_config=CompilationConfig(backend="inductor"),
@@ -452,12 +432,7 @@ class TestTrackCudagraphMode(TrackTestBase):
             CUDAGraphMode.FULL_DECODE_ONLY,
         ):
             with self.subTest(mode=mode):
-                with patch(
-                    "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-                ), patch(
-                    "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-                    return_value=None,
-                ):
+                with patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"):
                     vllm_config = VllmConfig(
                         optimization_level=OptimizationLevel.O2,
                         compilation_config=CompilationConfig(cudagraph_mode=mode, backend="inductor"),
@@ -649,15 +624,10 @@ class TestBreakableArchAutoInject(TrackTestBase):
             multimodal_config=None,
             attention_chunk_size=None,
         )
-        with patch(
-            "vllm_ascend.platform.NPUPlatform.check_and_update_config"
-        ), patch(
-            "vllm_ascend.platform._get_default_max_cudagraph_capture_size",
-            return_value=None,
-        ), patch.object(
-            VllmConfig, "_set_cudagraph_sizes", lambda self: None
-        ), patch.object(
-            VllmConfig, "_set_max_num_scheduled_tokens", lambda self: None
+        with (
+            patch("vllm_ascend.platform.NPUPlatform.check_and_update_config"),
+            patch.object(VllmConfig, "_set_cudagraph_sizes", lambda self: None),
+            patch.object(VllmConfig, "_set_max_num_scheduled_tokens", lambda self: None),
         ):
             vllm_config = VllmConfig()
             vllm_config.model_config = model_config

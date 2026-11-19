@@ -115,7 +115,7 @@ class TestConfigureInjection(FusionChainTestBase):
             QKNormRopeFusionPass,
         )
 
-        with patch("vllm_ascend.utils.is_310p", return_value=False):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=False):
             manager, _ = self._configure()
         types = [type(p) for p in manager.passes]
         self.assertIn(AddRMSNormQuantFusionPass, types)
@@ -132,7 +132,7 @@ class TestConfigureInjection(FusionChainTestBase):
             QKNormRopeFusionPass,
         )
 
-        with patch("vllm_ascend.utils.is_310p", return_value=False):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=False):
             manager, _ = self._configure(
                 fuse_norm_quant="false", fuse_qknorm_rope="false", fuse_muls_add="false"
             )
@@ -147,7 +147,7 @@ class TestConfigureInjection(FusionChainTestBase):
             AddRMSNormQuantFusionPass,
         )
 
-        with patch("vllm_ascend.utils.is_310p", return_value=True):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=True):
             manager, _ = self._configure()
         types = [type(p) for p in manager.passes]
         self.assertNotIn(AddRMSNormQuantFusionPass, types)
@@ -162,7 +162,7 @@ class TestUuidFactorization(FusionChainTestBase):
 
         from vllm_ascend.compilation.passes.muls_add_pass import MulsAddFusionPass
 
-        with patch("vllm_ascend.utils.is_310p", return_value=False):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=False):
             base = _track_vllm_config()
             scaled = _track_vllm_config()
             scaled.model_config.hf_text_config.routed_scaling_factor = 7.0
@@ -175,7 +175,7 @@ class TestUuidFactorization(FusionChainTestBase):
     @unittest.skipUnless(_NPU_AVAILABLE, "pass 实例化需 NPU 示例张量")
     def test_manager_aggregate_uuid_changes_with_flags(self):
         """③ 聚合层面：flag 开/关两份 passes 列表 → PostGradPassManager 聚合 uuid 不同。"""
-        with patch("vllm_ascend.utils.is_310p", return_value=False):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=False):
             on, _ = self._configure()
             off, _ = self._configure(
                 fuse_norm_quant="false", fuse_qknorm_rope="false", fuse_muls_add="false"
@@ -194,7 +194,7 @@ class TestCustomOpsMismatchWarn(FusionChainTestBase):
     def test_warns_when_fuse_on_and_custom_ops_missing(self):
         """④ fuse 开而 custom_ops 缺所需 op → warn（pattern 将失配，仅 muls_add 存活）。"""
         with (
-            patch("vllm_ascend.utils.is_310p", return_value=False),
+            patch("vllm_ascend.device.device_config.is_310p", return_value=False),
             patch(
                 "vllm_ascend.compilation.ascend_post_grad_pass_manager._required_custom_ops_missing",
                 return_value=True,
@@ -209,7 +209,7 @@ class TestCustomOpsMismatchWarn(FusionChainTestBase):
     def test_no_warn_when_custom_ops_covers(self):
         """④ custom_ops 正常（['all'] 或含所需 op）→ 不告警不炸。"""
         with (
-            patch("vllm_ascend.utils.is_310p", return_value=False),
+            patch("vllm_ascend.device.device_config.is_310p", return_value=False),
             patch(
                 "vllm_ascend.compilation.ascend_post_grad_pass_manager._required_custom_ops_missing",
                 return_value=False,
@@ -271,7 +271,7 @@ class TestMatchTableObservability(FusionChainTestBase):
         from vllm.compilation.passes.vllm_inductor_pass import VllmPatternMatcherPass
         from vllm_ascend.compilation.passes.muls_add_pass import MulsAddFusionPass
 
-        with patch("vllm_ascend.utils.is_310p", return_value=False):
+        with patch("vllm_ascend.device.device_config.is_310p", return_value=False):
             vllm_config = _track_vllm_config()
             fused = MulsAddFusionPass(vllm_config)
         scale = vllm_config.model_config.hf_text_config.routed_scaling_factor

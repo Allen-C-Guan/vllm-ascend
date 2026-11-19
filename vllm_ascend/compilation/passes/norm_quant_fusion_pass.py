@@ -40,6 +40,7 @@ from vllm.config.compilation import Range
 from vllm.logger import logger
 
 from vllm_ascend.compilation.passes.base_pattern import BasePattern
+from vllm_ascend.device.device_config import get_ascend_device_type
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.utils import enable_custom_op
 
@@ -336,14 +337,19 @@ def _merged_leading_dims_view_check(match: Match) -> bool:
 
     The replacement restores the swallowed shape via ``flatten(0, -2)``, so the
     matched view must be a pure leading-dims merge: 2D output with the last dim
-    unchanged and the leading element count preserved. Fails closed when the
-    shape facts are missing or a symbolic comparison cannot be decided locally.
+    unchanged and the leading element count preserved. The quantization must
+    explicitly target INT8. Fails closed when the shape facts are missing or a
+    symbolic comparison cannot be decided locally.
     """
     view_node = None
+    quant_node = None
     for node in match.nodes:
         if node.target in (torch.ops.aten.view.default, torch.ops.aten.reshape.default):
             view_node = node
-            break
+        elif node.target == torch.ops.npu.npu_dynamic_quant.default:
+            quant_node = node
+    if quant_node is None or quant_node.kwargs.get("dst_type") not in (torch.int8, 1):
+        return False
     if view_node is None or not isinstance(view_node.args[0], torch.fx.Node):
         return False
     norm_meta = view_node.args[0].meta.get("tensor_meta")
@@ -449,7 +455,7 @@ class AddRMSNormDynamicQuantPatternWithNoneBiasView(BasePattern):
             quant_func = CallFunction(
                 torch.ops.npu.npu_dynamic_quant.default,
                 CallFunction(view_op, norm_out0, Ignored()),
-                dst_type=torch.int8,
+                dst_type=Ignored(),
                 _users=2,
             )
             patterns.append(

@@ -99,7 +99,6 @@ from vllm_ascend.core.kv_cache_placement import (
 )
 from vllm_ascend.cpu_binding import bind_cpus
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
-from vllm_ascend.device_allocator.camem import CaMemAllocator
 from vllm_ascend.device_allocator.sleep_mem_optimized import SleepWakeupManager
 from vllm_ascend.distributed.eplb.eplb_state import AscendEplbState
 from vllm_ascend.distributed.kv_transfer.kv_p2p.sfa_pd_rd2h.dspark_context import uses_sfa_dspark_kv_transfer
@@ -160,6 +159,12 @@ torch.npu.config.allow_internal_format = True
 
 
 _GPU_WORKER_TRITON_LOCK = RLock()
+
+
+def _get_camem_allocator():
+    from vllm_ascend.device_allocator.camem import CaMemAllocator
+
+    return CaMemAllocator.get_instance()
 
 
 @contextmanager
@@ -465,7 +470,7 @@ class NPUWorker(GPUWorker):
             self.sleep_wakeup_manager.sleep()
         self.synchronize_device()
 
-        allocator = CaMemAllocator.get_instance()
+        allocator = _get_camem_allocator()
         global_te.unregister_buffer()
         allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
         free_bytes_after_sleep, total = torch.npu.mem_get_info()
@@ -489,7 +494,7 @@ class NPUWorker(GPUWorker):
                 "or enable additional_config.rl_config (enabled: true) which disables NZ "
                 "automatically."
             )
-        allocator = CaMemAllocator.get_instance()
+        allocator = _get_camem_allocator()
         allocator.wake_up(tags=tags)
         if tags is None or "kv_cache" in tags:
             global_te.reregister_buffer()
@@ -1115,7 +1120,7 @@ class NPUWorker(GPUWorker):
 
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:
-            allocator = CaMemAllocator.get_instance()
+            allocator = _get_camem_allocator()
             assert allocator.get_current_usage() == 0, "Sleep mode can only be used for one instance per process."
             context = allocator.use_memory_pool(tag="weights")
         else:
@@ -1466,7 +1471,7 @@ class NPUWorker(GPUWorker):
     def _maybe_get_memory_pool_context(self, tag: str) -> AbstractContextManager:
         """Return the sleep-mode pool for ``tag``, or a no-op context."""
         if self.vllm_config.model_config.enable_sleep_mode:
-            allocator = CaMemAllocator.get_instance()
+            allocator = _get_camem_allocator()
             return allocator.use_memory_pool(tag=tag)
         return nullcontext()
 

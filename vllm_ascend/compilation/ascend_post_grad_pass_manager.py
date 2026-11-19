@@ -170,7 +170,7 @@ class AscendPostGradPassManager(PostGradPassManager):
         to stay clear of CUDA/ROCm-only fusion classes).
         """
         from vllm_ascend.ascend_config import get_ascend_config
-        from vllm_ascend.utils import is_310p
+        from vllm_ascend.device.device_config import is_310p
 
         try:
             acc = get_ascend_config().ascend_compilation_config

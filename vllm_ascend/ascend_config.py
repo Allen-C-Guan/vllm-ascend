@@ -1562,7 +1562,7 @@ class FinegrainedTPConfig:
                     "oproj_tensor_parallel_size / mlp_tensor_parallel_size are not supported "
                     "with prefill_context_parallel_size > 1."
                 )
-            # decode_query_len mirrors _get_default_max_cudagraph_capture_size in platform.py.
+            # Capture sizing must include speculative draft tokens in each decode step.
             decode_query_len = 1
             speculative_config = vc.speculative_config
             if speculative_config and speculative_config.num_speculative_tokens:
