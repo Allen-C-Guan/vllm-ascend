@@ -121,8 +121,9 @@ def test_w8a8_dynamic_fusion_match_table():
     norm node is ``_C_ascend.npu_add_rms_norm_bias(x, residual, weight, None,
     eps)`` — the registry lacked a bias=None dynamic variant (the WithBias
     pattern needs a tensor 4th arg), so rmsnorm_quant_fusion_pass stayed at 0
-    (T0b-1R). The added AddRMSNormDynamicQuantPatternWithNoneBias (+View)
-    variants must turn the 0.6B cold-compile match count above zero. The
+    (T0b-1R). The community AddRMSNormDynamicQuantPatternNoBias and the opt-in
+    local WithNoneBiasView variant must turn the 0.6B cold-compile match count
+    above zero. The
     pattern-level mechanics are covered CPU-side by
     tests/ut/compilation/test_norm_quant_fusion_w2_patterns.py; this e2e case
     proves the hit on the real 0.6B graph (D2: match_table rmsnorm_quant>0).
@@ -142,8 +143,8 @@ def test_w8a8_dynamic_fusion_match_table():
         compilation_config=_TRACK_CG,
         additional_config={
             "ascend_compilation_config": {
-                # 方案 A (U-approved): the dynamic fusion variants are opt-in —
-                # default-off keeps greedy output token-identical to eager.
+                # 方案 A (U-approved): the view/reshape fusion variant is opt-in;
+                # the direct bias=None form follows the community default.
                 "fuse_norm_quant_dynamic": True,
             },
             "weight_nz_mode": 0,

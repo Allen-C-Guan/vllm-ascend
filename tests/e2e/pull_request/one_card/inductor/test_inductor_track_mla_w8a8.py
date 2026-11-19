@@ -198,7 +198,7 @@ def test_inductor_track_mla_w8a8_match_table_recorded():
 
     # (e) recorded, NOT asserted: probe read all three passes at 0 — the
     # W8A8_DYNAMIC norm is the WithBias form (bias=None 4th arg); the dynamic
-    # fusion variants are opt-in (fuse_norm_quant_dynamic), per stage4 W2/D1.
+    # view/reshape fusion variant is opt-in (fuse_norm_quant_dynamic), per stage4 W2/D1.
     print(f"MLA_W8A8_MATCH_TABLE (recorded; probe: three passes all 0): {table}")
     print(
         f"MLA_W8A8_COUNTERS (recorded; probe: 28 compiles / 112 graphs captured): "
