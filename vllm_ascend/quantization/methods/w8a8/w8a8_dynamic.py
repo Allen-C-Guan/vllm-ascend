@@ -434,14 +434,13 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
                 swiglu_limit=mlp_compute_input.swiglu_limit,
             )
         elif fusion and not is_swigluoai_uninterleave:
-            hidden_states, swiglu_out_scale, _ = torch.ops._C_ascend.grouped_matmul_swiglu_quant_weight_nz(
+            hidden_states, swiglu_out_scale = torch_npu.npu_grouped_matmul_swiglu_quant_v2(
                 x=hidden_states,
-                weight=w1[0],
+                weight=w1,
                 group_list=cumsum_group_list(mlp_compute_input.group_list, mlp_compute_input.group_list_type, 0),
-                weight_scale=w1_scale[0],
+                weight_scale=w1_scale,
                 x_scale=pertoken_scale,
                 bias=None,
-                swiglu_limit=mlp_compute_input.swiglu_limit,
             )
         # The following 2 branches are prepared to those who choose to not use grouped_matmul_swiglu_quant, it will be
         # deleted after grouped_matmul_swiglu_quant is the default option. For now, when fusion_ops_gmmswigluquant is

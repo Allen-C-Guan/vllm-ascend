@@ -216,6 +216,40 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
         self.assertIs(fused_experts_input.topk_ids, topk_ids)
         self.assertIs(fused_experts_input.lora_context, lora_context)
 
+    @patch("torch_npu.npu_grouped_matmul_swiglu_quant_v2")
+    @patch("vllm_ascend.quantization.methods.w8a8.w8a8_dynamic._EXTRA_CTX")
+    def test_apply_gmm1_act_quant_uses_v2(self, mock_extra_ctx, mock_gmm_swiglu):
+        mock_extra_ctx.moe_comm_type = MoECommType.ALLGATHER
+        hidden_states = torch.randn(2, self.hidden_size, dtype=torch.bfloat16)
+        quantized = torch.randint(-8, 8, (2, self.hidden_size), dtype=torch.int8)
+        token_scale = torch.randn(2, dtype=torch.float32)
+        weight = torch.randint(-8, 8, (self.num_experts, 16, self.hidden_size), dtype=torch.int8)
+        weight_scale = torch.ones(self.num_experts, 16, dtype=torch.float32)
+        output = torch.randint(-8, 8, (2, 8), dtype=torch.int8)
+        output_scale = torch.randn(2, dtype=torch.float32)
+        mock_gmm_swiglu.return_value = (output, output_scale)
+        self.quant_method._quant_hidden_states = Mock(return_value=(quantized, token_scale))
+        self.quant_method._get_mlp_weights = Mock(return_value=([weight], [weight_scale], None, None))
+        compute_input = SimpleNamespace(
+            hidden_states=hidden_states,
+            dynamic_scale=None,
+            layer=MagicMock(),
+            activation="silu",
+            fusion=True,
+            dynamic_eplb=False,
+            group_list=torch.tensor([2]),
+            group_list_type=1,
+            swiglu_limit=0.0,
+        )
+
+        result = self.quant_method.apply_gmm1_act_quant(compute_input)
+
+        self.assertEqual(result, (output, output_scale))
+        kwargs = mock_gmm_swiglu.call_args.kwargs
+        self.assertEqual(kwargs["weight"], [weight])
+        self.assertEqual(kwargs["weight_scale"], [weight_scale])
+        self.assertNotIn("swiglu_limit", kwargs)
+
     @patch("torch_npu.npu_format_cast")
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_dynamic.get_ascend_config")
     def test_process_weights_after_loading(self, mock_get_config, mock_format_cast):
